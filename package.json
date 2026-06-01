@@ -1,6 +1,6 @@
 {
   "name": "pi-btw-sidecar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi extension for persistent /btw side conversations with an isolated sidecar agent session.",
   "type": "module",
   "main": "./index.ts",

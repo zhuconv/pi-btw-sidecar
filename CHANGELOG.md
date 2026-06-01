@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-01
+
 ### Added
 
 - Agent markdown discovery and modal-style `/btw:agent` selection.
@@ -20,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Kept summary sessions anchored to the selected agent instructions plus the summarize task instruction.
 - Isolated BTW sub-sessions from tools, skills, prompts, agents files, themes, extensions, and inherited main-session system prompts.
 - Rendered assistant transcript text with markdown-aware TUI styling for emphasis such as bold and italic.
+- Split the BTW runtime into core and overlay modules for deferred loading and smaller startup cost.
+- Updated Pi peer and dev dependencies to 0.78-compatible ranges.
 
 ### Fixed
 
