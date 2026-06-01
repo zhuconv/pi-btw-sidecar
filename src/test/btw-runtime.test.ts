@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
-import btwExtension, { buildOverlayTranscript, resolveBtwModalDimensions } from "../btw-runtime";
+import btwExtension from "../btw-runtime";
+import { buildOverlayTranscript, resolveBtwModalDimensions } from "../btw-runtime-core";
 import {
   discoverBtwAgents,
   findBtwAgentByName,
@@ -547,7 +548,7 @@ function createHarness(
   // Pre-register the common BTW override fixture used by most tests.
   registeredModels.set("fast-provider/fast-model", { provider: "fast-provider", id: "fast-model", api: "custom-api" });
   registeredModels.set("openai-codex/gpt-5.5", { provider: "openai-codex", id: "gpt-5.5", api: "openai-codex-responses" });
-  registeredModels.set("gitlawb-opengateway/mimo-v2.5-pro", { provider: "gitlawb-opengateway", id: "mimo-v2.5-pro", api: "openai-completions", baseUrl: "https://opengateway.gitlawb.com/v1/xiaomi-mimo", reasoning: true, compat: { interleavedReasoningField: "reasoning_content" } });
+  registeredModels.set("xiaomi-token-plan-sgp/mimo-v2.5-pro", { provider: "xiaomi-token-plan-sgp", id: "mimo-v2.5-pro", api: "anthropic-messages" });
   registeredModels.set("cloudflare/@cf/moonshotai/kimi-k2.6", { provider: "cloudflare", id: "@cf/moonshotai/kimi-k2.6", api: "openai-responses" });
   const mainSessionInputs: string[] = [];
 
@@ -893,18 +894,11 @@ describe("btw runtime behavior", () => {
     await harness.command("btw", "ask question");
 
     const options = createAgentSessionMock.mock.calls[0][0];
-    expect(options.model).toMatchObject({ provider: "gitlawb-opengateway", id: "mimo-v2.5-pro", api: "openai-completions" });
+    expect(options.model).toMatchObject({ provider: "xiaomi-token-plan-sgp", id: "mimo-v2.5-pro", api: "anthropic-messages" });
     expect(options.thinkingLevel).toBe("high");
-    expect(options.model.compat).toMatchObject({
-      interleavedReasoningField: "reasoning_content",
-      maxTokensField: "max_tokens",
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: false,
-      supportsStore: false,
-      supportsStrictMode: false,
-    });
+    expect(options.model.compat).toBeUndefined();
 
-    expect(options.resourceLoader.getExtensions().extensions).toEqual([]);
+    expect(options.resourceLoader.getExtensions().extensions).toHaveLength(1);
   });
 
   it("keeps BTW sub-session tools disabled even when active tools are available", async () => {
