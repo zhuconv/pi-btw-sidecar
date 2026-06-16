@@ -14,9 +14,11 @@ Persistent `/btw` side conversations for the [Pi coding agent](https://github.co
 - `/btw` contextual side thread with current main-session context.
 - `/btw:tangent` contextless tangent thread.
 - Modal BTW composer with streaming markdown transcript, scrolling, and Escape dismissal.
-- Agent selection from `agent/agents/*.md` via `/btw:agent`; the selected agent markdown body becomes the sidecar instruction prompt.
+- Agent selection from `agent/agents/*.md` via `/btw:agent`; the selected agent markdown body becomes the sidecar instruction prompt. Agent frontmatter `color` field is used for per-agent accent styling.
 - BTW-only model and thinking overrides with `/btw:model` and `/btw:thinking`.
+- Transcript item selection for inject: when injecting the BTW thread, an interactive selection mode lets the user pick specific transcript items before injection.
 - Isolated no-tool sub-sessions: BTW agents receive selected instructions and seeded conversation context without tools, skills, prompts, agents files, themes, extension resource collections, or inherited main-session system prompts.
+- Configurable icon mode (`nerd`, `unicode`, `emoji`, or `auto`/`fallback`) with distinct icons for agents, session, model, and thinking status labels.
 - Debug logging controlled by root `config.json`, with logs written only under extension-local `debug/` when enabled.
 
 ## Installation
@@ -116,7 +118,7 @@ pi-btw-sidecar/
 │   ├── agent-selection-ui.ts        # `/btw:agent` picker UI helpers
 │   ├── config.ts                    # Config loading, validation, and defaults
 │   ├── debug-logger.ts              # File-only debug logger gated by config.json
-│   └── icons.ts                     # Modal icon fallbacks
+│   └── icons.ts                     # Modal icon sets (nerd, unicode, emoji, fallback modes)
 ├── src/test/
 │   └── btw-runtime.test.ts
 ├── config/

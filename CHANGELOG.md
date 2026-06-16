@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-16
+
+### Added
+- Added inject-select mode for selecting and injecting specific transcript items back into the main session.
+- Added `color` field support in agent frontmatter for per-agent accent styling.
+- Added `unicode` and `emoji` icon modes alongside the existing `nerd` and `fallback` modes, with distinct icons for agents, session, model, and thinking status labels.
+
+### Changed
+- Migrated the BTW overlay input from `Input` to `Editor` with a configurable editor theme for improved text editing support.
+- Dimmed non-ANSI parts of assistant transcript text to keep ANSI-decorated emphasis visible while reducing plain-text contrast.
+
 ## [0.2.0] - 2026-06-01
 
 ### Added
