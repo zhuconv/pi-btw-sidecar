@@ -25,6 +25,10 @@ const BTW_COMMANDS = [
     description: "Inject the full BTW thread into the main agent as a user message.",
   },
   {
+    name: "btw:inject-select",
+    description: "Open an inline chooser to select specific BTW exchanges to inject into the main agent.",
+  },
+  {
     name: "btw:summarize",
     description: "Summarize the BTW thread, then inject the summary into the main agent.",
   },

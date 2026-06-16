@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { BtwOverlayComponent } from "../btw-overlay";
 import btwExtension from "../btw-runtime";
 import { buildOverlayTranscript, resolveBtwModalDimensions } from "../btw-runtime-core";
+import { resolveBtwIconsForContext } from "../icons";
 import {
   discoverBtwAgents,
   findBtwAgentByName,
@@ -119,7 +122,21 @@ const tuiMocks = vi.hoisted(() => {
     render(_width: number) {
       return [`> ${this.value}`];
     }
-    handleInput(_data: string) {}
+    handleInput(data: string) {
+      if (data === "\r" || data === "\n") {
+        this.onSubmit?.(this.value);
+        return;
+      }
+
+      if (data === "\x7f" || data === "\b") {
+        this.value = this.value.slice(0, -1);
+        return;
+      }
+
+      if (!data.includes("\x1b") && !/[\x00-\x08\x0b-\x1f\x7f]/.test(data)) {
+        this.value += data;
+      }
+    }
   }
 
   class FakeContainer {
@@ -471,6 +488,32 @@ function transcriptEntries(overlay: any) {
   return overlay.getTranscriptEntries();
 }
 
+function composerRowsFromRenderedOverlay(rendered: string[]): string[] {
+  const statusIndex = rendered.findIndex((line) => line.includes("Ready. Enter submits"));
+  const hintsIndex = rendered.findIndex((line, index) => index > statusIndex && line.includes("Scroll wheel"));
+
+  expect(statusIndex).toBeGreaterThanOrEqual(0);
+  expect(hintsIndex).toBeGreaterThan(statusIndex);
+
+  return rendered.slice(statusIndex + 1, hintsIndex);
+}
+
+function expectRowsToFitRenderWidth(rows: string[], renderWidth: number): void {
+  for (const row of rows) {
+    expect(row).not.toContain("\n");
+    expect(visibleWidth(row)).toBeLessThanOrEqual(renderWidth);
+  }
+}
+
+function createBtwIconDetectionContext(env: Record<string, string | undefined> = {}) {
+  return {
+    platform: "linux",
+    env,
+    pathExists: () => false,
+    readTextFile: () => null,
+  };
+}
+
 function findLatest<T>(items: T[], predicate: (item: T) => boolean): T {
   const match = [...items].reverse().find(predicate);
   if (!match) throw new Error("Expected matching item");
@@ -590,7 +633,7 @@ function createHarness(
     setToolsExpanded: () => {},
     select: async (title: string, labels: string[]) => {
       selectCalls.push({ title, labels });
-      return labels.find((label) => /\bcode\b/.test(label)) ?? labels[0];
+      return labels.find((label) => /^○ code\b/.test(label)) ?? labels[0];
     },
     confirm: async () => false,
     input: async () => undefined,
@@ -1038,10 +1081,10 @@ describe("btw runtime behavior", () => {
     const overlay = harness.latestOverlayComponent();
     overlay.refresh();
 
-    expect(overlay["detailsText"].text).toContain("Agent: architect");
-    expect(overlay["detailsText"].text).toContain("Model: fast-provider/fast-model (custom-api) (override)");
-    expect(overlay["detailsText"].text).toContain("Thinking: low (override)");
-    expect(overlay.render(120).join("\n")).toContain("Agent: architect");
+    expect(overlay["detailsText"].text).toContain("🧭 architect");
+    expect(overlay["detailsText"].text).toContain("◈ fast-provider/fast-model");
+    expect(overlay["detailsText"].text).toContain("🧠 low");
+    expect(overlay.render(120).join("\n")).toContain("🧭 architect");
   });
 
   it("uses the BTW model override but keeps summarize thinking off", async () => {
@@ -1546,7 +1589,7 @@ describe("btw runtime behavior", () => {
     const reopened = harness.latestOverlayComponent();
     const transcript = transcriptText(reopened);
     expect(transcript).toContain("You  first question");
-    expect(transcript).toContain("Assistant");
+    expect(transcript).not.toContain("No BTW thread yet");
     expect(transcript).toContain("First answer");
     expect(reopened.statusText.text).toContain("Ready for a follow-up");
   });
@@ -1985,6 +2028,81 @@ describe("btw runtime behavior", () => {
     expect(inputHandleSpy).toHaveBeenCalledWith("abc");
   });
 
+  it("shift enter selective injection inserts a newline in the BTW composer and Enter submits the complete draft", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementation(() => streamAnswer("Multiline answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    expect(record).toBeDefined();
+
+    overlay.handleInput("first line");
+    overlay.handleInput("\x1b[13;2~");
+    expect(record.session.prompt).not.toHaveBeenCalled();
+
+    overlay.handleInput("second line");
+    overlay.handleInput("\r");
+    await flushAsyncWork();
+
+    expect(record.session.prompt).toHaveBeenCalledWith("first line\nsecond line", { source: "extension" });
+    expect(record.promptCalls.at(-1)?.text).toBe("first line\nsecond line");
+  });
+
+  it("Editor-backed BTW composer visibly renders Shift+Enter draft lines before submit", async () => {
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    const record = subSessionRecords[0];
+    expect(record).toBeDefined();
+
+    overlay.handleInput("first line");
+    overlay.handleInput("\x1b[13;2~");
+    overlay.handleInput("second line");
+
+    const composerRows = composerRowsFromRenderedOverlay(overlay.render(80));
+    const firstLineIndex = composerRows.findIndex((line) => line.includes("first line"));
+    const secondLineIndex = composerRows.findIndex((line) => line.includes("second line"));
+
+    expect(record.session.prompt).not.toHaveBeenCalled();
+    expect(composerRows).toHaveLength(4);
+    expect(firstLineIndex).toBeGreaterThan(0);
+    expect(secondLineIndex).toBeGreaterThan(firstLineIndex);
+    expect(composerRows[firstLineIndex]).not.toContain("second line");
+    expect(composerRows[secondLineIndex]).not.toContain("first line");
+    expectRowsToFitRenderWidth(composerRows, 80);
+  });
+
+  it("Editor-backed BTW composer keeps the current line visible for a narrow long multi-line draft", async () => {
+    const renderWidth = 36;
+    const harness = createHarness([], { terminal: { columns: renderWidth, rows: 18 } });
+    const draftLines = Array.from({ length: 8 }, (_, index) => `line-${index + 1}`);
+
+    await harness.runSessionStart();
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    for (const [index, line] of draftLines.entries()) {
+      overlay.handleInput(line);
+      if (index < draftLines.length - 1) {
+        overlay.handleInput("\x1b[13;2~");
+      }
+    }
+
+    const composerRows = composerRowsFromRenderedOverlay(overlay.render(renderWidth));
+
+    expect(composerRows.length).toBeGreaterThanOrEqual(7);
+    expect(composerRows.some((line) => line.includes("↑ 3 more"))).toBe(true);
+    expect(composerRows.some((line) => line.includes("line-8"))).toBe(true);
+    expect(composerRows.some((line) => line.includes("line-1"))).toBe(false);
+    expectRowsToFitRenderWidth(composerRows, renderWidth);
+  });
+
   it("renders BTW as a bordered dialog with an internal transcript viewport", async () => {
     const harness = createHarness();
     const longAnswer = Array.from({ length: 24 }, (_, index) => `line ${index + 1} of a long answer`).join("\n");
@@ -2045,7 +2163,7 @@ describe("btw runtime behavior", () => {
     expect(emptyStateLine).toContain("<fg:border>│</fg:border><fg:dim>No BTW thread yet.");
     expect(emptyStateLine).not.toContain("<fg:border>│</fg:border> <fg:dim>No BTW thread yet.");
     expect(assistantBodyLine).toContain("<fg:border>│</fg:border>    First answer");
-    expect(inputLine).toContain("<fg:border>│</fg:border>> ");
+    expect(inputLine).toContain("<fg:border>│</fg:border><fg:border>─");
     expect(inputLine).not.toContain("\x1b_pi:c\x07");
   });
 
@@ -2331,6 +2449,69 @@ describe("btw runtime behavior", () => {
     });
   });
 
+  it("shift enter selective injection opens the selective injection chooser inline instead of a nested overlay", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Second answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("second question");
+    await flushAsyncWork();
+
+    const overlayCountBefore = harness.overlays.length;
+    const selectCallCountBefore = harness.selectCalls.length;
+
+    await harness.command("btw:inject-select", "Use selected turns.");
+    await flushAsyncWork();
+
+    expect(harness.overlays).toHaveLength(overlayCountBefore);
+    expect(harness.selectCalls).toHaveLength(selectCallCountBefore);
+
+    const renderedSelection = overlay.render(100).join("\n");
+    expect(renderedSelection).toContain("Select BTW exchanges to inject");
+    expect(renderedSelection).toContain("☐ 1 first question");
+    expect(renderedSelection).toContain("☐ 2 second question");
+    expect(renderedSelection).toContain("Inject Selected");
+  });
+
+  it("shift enter selective injection injects only checked transcript turns into the main session", async () => {
+    const harness = createHarness();
+    promptStreamMock
+      .mockImplementationOnce(() => streamAnswer("First answer"))
+      .mockImplementationOnce(() => streamAnswer("Second answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw", "first question");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.input.onSubmit?.("second question");
+    await flushAsyncWork();
+
+    await harness.command("btw:inject-select", "Use selected turns.");
+    await flushAsyncWork();
+
+    overlay.handleInput("\x1b[B");
+    overlay.handleInput(" ");
+    overlay.handleInput("\r");
+    await flushAsyncWork();
+
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]).toEqual({
+      content: "Here is a side conversation I had. Use selected turns.\n\nUser: second question\nAssistant: Second answer",
+      options: undefined,
+    });
+    expect(harness.sentUserMessages[0]?.content).not.toContain("first question");
+    expect(getCustomEntries(harness.entries, "btw-thread-reset")).toHaveLength(1);
+    expect(harness.notifications.at(-1)).toEqual({
+      message: "Injected selected BTW thread (1 exchange).",
+      type: "info",
+    });
+  });
+
   it("/btw:summarize success summarizes the active sub-session thread, disposes it, dismisses the overlay, and reopens fresh", async () => {
     const harness = createHarness();
     promptStreamMock
@@ -2576,6 +2757,92 @@ describe("btw runtime behavior", () => {
     });
   });
 
+  it("phase 1 resolves powerline-compatible explicit icon modes", () => {
+    const modes = ["nerd", "unicode", "emoji"].map((mode) =>
+      resolveBtwIconsForContext(
+        createBtwIconDetectionContext({ PI_BTW_SIDECAR_ICON_MODE: mode }) as any,
+      ).mode,
+    );
+
+    expect(modes).toEqual(["nerd", "unicode", "emoji"]);
+  });
+
+  it("phase 1 exposes powerline-style semantic icons for BTW chrome and transcript states", () => {
+    const nerd = resolveBtwIconsForContext(
+      createBtwIconDetectionContext({ PI_BTW_SIDECAR_ICON_MODE: "nerd" }) as any,
+    ) as any;
+    const unicode = resolveBtwIconsForContext(
+      createBtwIconDetectionContext({ PI_BTW_SIDECAR_ICON_MODE: "unicode" }) as any,
+    ) as any;
+    const emoji = resolveBtwIconsForContext(
+      createBtwIconDetectionContext({ PI_BTW_SIDECAR_ICON_MODE: "emoji" }) as any,
+    ) as any;
+
+    expect(nerd.icons).toMatchObject({
+      agents: "\uF0C0",
+      session: "\uF550",
+      model: "\uEC19",
+      thinking: "\uF0EB",
+      pending: "\u{F0150}",
+      error: "\uF071",
+    });
+    expect(unicode.icons).toMatchObject({
+      agents: "⍟",
+      session: "◍",
+      model: "◈",
+      thinking: "∿",
+      pending: "⌛",
+      error: "⚠",
+    });
+    expect(emoji.icons).toMatchObject({
+      agents: "🧭",
+      session: "🆔",
+      model: "◈",
+      thinking: "🧠",
+      pending: "⏳",
+      error: "⚠️",
+    });
+  });
+
+  it("phase 1 labels transcript assistant turns with the active BTW agent", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementationOnce(() => streamAnswer("Architect answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw:agent", "architect");
+    await harness.command("btw", "explain risks");
+
+    const transcript = transcriptText(harness.latestOverlayComponent());
+
+    expect(transcript).toContain("You  explain risks");
+    expect(transcript.toLowerCase()).toContain("architect");
+    expect(transcript).not.toContain("Assistant");
+  });
+
+  it("phase 1 surfaces the BTW session mode in modal metadata", async () => {
+    const harness = createHarness();
+    promptStreamMock.mockImplementationOnce(() => streamAnswer("Tangent answer"));
+
+    await harness.runSessionStart();
+    await harness.command("btw:tangent", "side quest");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+
+    expect(overlay["detailsText"].text).toContain("🆔 tangent");
+    expect(overlay["summaryText"].text).toContain("1 exchange");
+    expect(overlay["summaryText"].text).toContain("idle");
+  });
+
+  it("phase 1 lets the large modal scale beyond the legacy cap on wide terminals", () => {
+    const wideLarge = resolveBtwModalDimensions({ terminal: { columns: 220, rows: 70 } } as any, "large");
+
+    expect(wideLarge.width).toBeGreaterThan(180);
+    expect(wideLarge.maxHeight).toBeGreaterThanOrEqual(64);
+    expect(wideLarge.width).toBeLessThanOrEqual(218);
+    expect(wideLarge.maxHeight).toBeLessThanOrEqual(68);
+  });
+
   it("ordinary BTW follow-up submit and Escape dismissal do not send content to the main session", async () => {
     const harness = createHarness();
     promptStreamMock
@@ -2613,6 +2880,278 @@ describe("btw runtime behavior", () => {
         { role: "assistant", content: [{ type: "text", text: "keep assistant" }] },
       ],
     });
+  });
+
+  it("minor frontend polish renders modal metadata as an iconized status-bar instead of plain labels", async () => {
+    process.env.PI_BTW_SIDECAR_ICON_MODE = "nerd";
+    const harness = createHarness();
+    harness.setMainThinkingLevel("high");
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw:thinking", "low");
+    await harness.command("btw:agent", "architect");
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    const details = overlay["detailsText"].text;
+
+    expect(details).toContain("\uF1AD architect");
+    expect(details).toContain("\uF550 contextual");
+    expect(details).toContain("\uEC19 fast-provider/fast-model");
+    expect(details).toContain("\uF0EB low");
+    expect(details).not.toContain("Agent:");
+    expect(details).not.toContain("Session:");
+    expect(details).not.toContain("Model:");
+    expect(details).not.toContain("Thinking:");
+  });
+
+  it("powerline metadata polish uses powerline-footer Nerd Font icons for BTW agents", async () => {
+    process.env.PI_BTW_SIDECAR_ICON_MODE = "nerd";
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw:agent", "architect");
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    const details = overlay["detailsText"].text;
+
+    expect(details).toContain("\uF1AD architect");
+    expect(details).not.toContain("\uF0C0 architect");
+  });
+
+  it("powerline metadata polish colors model and thinking metadata with powerline theme markers", async () => {
+    process.env.PI_BTW_SIDECAR_ICON_MODE = "fallback";
+    const harness = createHarness([], {
+      theme: {
+        fg: (name: string, text: string) => `<fg:${name}>${text}</fg:${name}>`,
+        bg: (name: string, text: string) => `<bg:${name}>${text}</bg:${name}>`,
+        italic: (text: string) => `<italic>${text}</italic>`,
+        bold: (text: string) => `<bold>${text}</bold>`,
+      },
+    });
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw:thinking", "low");
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    const details = overlay["detailsText"].text;
+
+    expect(details).toContain("◈ fast-provider/fast-model");
+    expect(details).not.toContain("<fg:model>");
+    expect(details).toContain("<fg:thinkingLow>🧠 low</fg:thinkingLow>");
+  });
+  it("runtime theme color safety renders model metadata without unsupported theme names", async () => {
+    process.env.PI_BTW_SIDECAR_ICON_MODE = "fallback";
+    const supportedForegroundColors = new Set([
+      "accent",
+      "border",
+      "borderAccent",
+      "borderMuted",
+      "success",
+      "error",
+      "warning",
+      "muted",
+      "dim",
+      "text",
+      "thinkingText",
+      "userMessageText",
+      "customMessageText",
+      "customMessageLabel",
+      "toolTitle",
+      "toolOutput",
+      "mdHeading",
+      "mdLink",
+      "mdLinkUrl",
+      "mdCode",
+      "mdCodeBlock",
+      "mdCodeBlockBorder",
+      "mdQuote",
+      "mdQuoteBorder",
+      "mdHr",
+      "mdListBullet",
+      "toolDiffAdded",
+      "toolDiffRemoved",
+      "toolDiffContext",
+      "syntaxComment",
+      "syntaxKeyword",
+      "syntaxFunction",
+      "syntaxVariable",
+      "syntaxString",
+      "syntaxNumber",
+      "syntaxType",
+      "syntaxOperator",
+      "syntaxPunctuation",
+      "thinkingOff",
+      "thinkingMinimal",
+      "thinkingLow",
+      "thinkingMedium",
+      "thinkingHigh",
+      "thinkingXhigh",
+      "bashMode",
+    ]);
+    const harness = createHarness([], {
+      theme: {
+        fg: (name: string, text: string) => {
+          if (!supportedForegroundColors.has(name)) {
+            throw new Error(`Unknown theme color: ${name}`);
+          }
+          return `<fg:${name}>${text}</fg:${name}>`;
+        },
+        bg: (name: string, text: string) => `<bg:${name}>${text}</bg:${name}>`,
+        italic: (text: string) => `<italic>${text}</italic>`,
+        bold: (text: string) => `<bold>${text}</bold>`,
+      },
+    });
+
+    await harness.runSessionStart();
+    await harness.command("btw:model", "fast-provider fast-model custom-api");
+    await harness.command("btw", "");
+    await flushAsyncWork();
+
+    const overlay = new BtwOverlayComponent({
+      tui: { terminal: { columns: 120, rows: 36, write: vi.fn() }, requestRender: vi.fn() } as any,
+      theme: harness.baseCtx.ui.theme as any,
+      keybindings: { matches: () => false } as any,
+      readTranscriptEntries: () => [],
+      getStatus: () => null,
+      getMode: () => "contextual",
+      getDetails: () => "🧭 none · 🕘 contextual · <model>◈ fast-provider/fast-model</model> · <thinkingOff>🧠 off</thinkingOff>",
+      config: { modalSize: "medium", showReasoning: true } as any,
+      renderTranscript: () => [],
+      resolveModalDimensions: () => ({ maxHeight: 24 }),
+      onSubmit: vi.fn(),
+      onDismiss: vi.fn(),
+      onUnfocus: vi.fn(),
+    });
+
+    expect(() => overlay.refresh()).not.toThrow("Unknown theme color: model");
+    expect(overlay["detailsText"].text).toContain("fast-provider/fast-model");
+    expect(overlay["detailsText"].text).not.toContain("<fg:model>");
+  });
+
+
+  it("powerline metadata polish removes redundant model API source labels from modal metadata", async () => {
+    process.env.PI_BTW_SIDECAR_ICON_MODE = "fallback";
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw:agent", "ask");
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    const details = overlay["detailsText"].text;
+
+    expect(details).toContain("xiaomi-token-plan-sgp/mimo-v2.5-pro");
+    expect(details).not.toContain("(anthropic-messages)");
+  });
+
+  it("powerline metadata polish removes redundant agent source labels from modal metadata", async () => {
+    process.env.PI_BTW_SIDECAR_ICON_MODE = "fallback";
+    const harness = createHarness();
+
+    await harness.runSessionStart();
+    await harness.command("btw:agent", "ask");
+    await harness.command("btw", "");
+
+    const overlay = harness.latestOverlayComponent();
+    overlay.refresh();
+    const details = overlay["detailsText"].text;
+
+    expect(details).toContain("xiaomi-token-plan-sgp/mimo-v2.5-pro");
+    expect(details).not.toContain("(configured)");
+  });
+
+  it("minor frontend polish opens inject-select in a small selector when the BTW chat modal is closed", async () => {
+    const harness = createHarness([
+      {
+        type: "custom",
+        customType: "btw-thread-entry",
+        data: {
+          question: "first question",
+          thinking: "",
+          answer: "First answer",
+          provider: "p",
+          model: "m",
+          api: "openai-responses",
+          thinkingLevel: "off",
+          timestamp: 1,
+        },
+      },
+      {
+        type: "custom",
+        customType: "btw-thread-entry",
+        data: {
+          question: "second question",
+          thinking: "",
+          answer: "Second answer",
+          provider: "p",
+          model: "m",
+          api: "openai-responses",
+          thinkingLevel: "off",
+          timestamp: 2,
+        },
+      },
+    ]);
+
+    await harness.runSessionStart();
+    const overlayCountBefore = harness.overlays.length;
+
+    await harness.command("btw:inject-select", "Use selected turns.");
+    await flushAsyncWork();
+
+    expect(harness.overlays).toHaveLength(overlayCountBefore);
+    expect(harness.selectCalls).toHaveLength(1);
+    expect(harness.selectCalls[0]?.title).toContain("Select BTW exchange to inject");
+    expect(harness.selectCalls[0]?.labels.join("\n")).toContain("first question");
+    expect(harness.selectCalls[0]?.labels.join("\n")).toContain("second question");
+    expect(harness.sentUserMessages).toHaveLength(1);
+    expect(harness.sentUserMessages[0]).toEqual({
+      content: "Here is a side conversation I had. Use selected turns.\n\nUser: first question\nAssistant: First answer",
+      options: undefined,
+    });
+  });
+
+  it("minor frontend polish shows a thinking label indicator while the BTW response is reasoning", async () => {
+    process.env.PI_BTW_SIDECAR_ICON_MODE = "unicode";
+    const harness = createHarness();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    promptStreamMock.mockImplementation(async function* () {
+      yield { type: "thinking_delta" as const, delta: "Inspecting package.json" };
+      await blocked;
+      yield { type: "text_delta" as const, delta: "Answer after reasoning" };
+      yield {
+        type: "done" as const,
+        message: {
+          ...makeAssistantMessage("Answer after reasoning"),
+          content: buildAssistantContent("Inspecting package.json", "Answer after reasoning"),
+        },
+      };
+    });
+
+    await harness.runSessionStart();
+    const pendingCommand = harness.command("btw", "reason first");
+    await flushAsyncWork();
+
+    try {
+      const overlay = await harness.waitForLatestOverlayComponent();
+      expect(overlay.statusText.text).toContain("∿ Thinking");
+      expect(overlay.statusText.text).not.toContain("streaming...");
+    } finally {
+      release();
+      await pendingCommand;
+    }
   });
 });
 

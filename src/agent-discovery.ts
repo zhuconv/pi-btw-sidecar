@@ -13,6 +13,7 @@ export type BtwAgentDefinition = {
   model?: string;
   thinkingLevel?: BtwAgentThinkingLevel;
   temperature?: number;
+  color?: string;
 };
 
 const AGENT_DISCOVERY_CACHE_MAX_ENTRIES = 32;
@@ -133,7 +134,7 @@ export function parseBtwAgentMarkdown(rawContent: string, path = "<memory>"): Bt
     return null;
   }
 
-  return {
+  const result: BtwAgentDefinition = {
     name,
     description: getStringField(parsed.frontmatter, "description") || `Agent ${name}`,
     systemPrompt,
@@ -149,6 +150,13 @@ export function parseBtwAgentMarkdown(rawContent: string, path = "<memory>"): Bt
     ),
     temperature: parseTemperature(parsed.frontmatter.temperature),
   };
+
+  const color = getStringField(parsed.frontmatter, "color");
+  if (color) {
+    result.color = color;
+  }
+
+  return result;
 }
 
 async function readAgentFile(path: string): Promise<BtwAgentDefinition | null> {

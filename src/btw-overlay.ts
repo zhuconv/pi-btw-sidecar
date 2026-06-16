@@ -1,13 +1,14 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   Container,
-  Input,
+  Editor,
   Key,
   Text,
   matchesKey,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
+  type EditorTheme,
   type Focusable,
   type KeybindingsManager,
   type TUI,
@@ -57,6 +58,7 @@ type BtwOverlayOptions = {
   onSubmit: (value: string) => void;
   onDismiss: () => void;
   onUnfocus: () => void;
+  onInjectSelect?: (selectedIndices: number[], instructions: string) => void;
 };
 
 function matchesBtwFocusShortcut(data: string): boolean {
@@ -80,7 +82,7 @@ function getCompletedExchangeCount(entries: BtwTranscript): number {
 }
 
 export class BtwOverlayComponent extends Container implements Focusable {
-  private readonly input: Input;
+  private readonly input: Editor;
   private readonly transcript: Container;
   private readonly statusText: Text;
   private readonly modeText: Text;
@@ -109,6 +111,11 @@ export class BtwOverlayComponent extends Container implements Focusable {
   private summaryTextValue = "";
   private statusTextValue = "";
   private hintsTextValue = "";
+  private injectSelectMode = false;
+  private injectSelectItems: Array<{ userText: string; checked: boolean }> = [];
+  private injectSelectIndex = 0;
+  private injectSelectInstructions = "";
+  private readonly onInjectSelectCallback: ((selectedIndices: number[], instructions: string) => void) | undefined;
 
   get focused(): boolean {
     return this._focused;
@@ -133,6 +140,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
     this.onSubmitCallback = options.onSubmit;
     this.onDismissCallback = options.onDismiss;
     this.onUnfocusCallback = options.onUnfocus;
+    this.onInjectSelectCallback = options.onInjectSelect;
 
     this.modeText = new Text("", 1, 0);
     this.detailsText = new Text("", 1, 0);
@@ -140,12 +148,27 @@ export class BtwOverlayComponent extends Container implements Focusable {
     this.transcript = new Container();
     this.statusText = new Text("", 1, 0);
 
-    this.input = new Input();
+    const editorTheme: EditorTheme = {
+      borderColor: (str: string) => this.theme.fg("border", str),
+      selectList: {
+        selectedPrefix: (text: string) => this.theme.fg("accent", text),
+        selectedText: (text: string) => this.theme.bold(text),
+        description: (text: string) => this.theme.fg("dim", text),
+        scrollInfo: (text: string) => this.theme.fg("dim", text),
+        noMatch: (text: string) => this.theme.fg("dim", text),
+      },
+    };
+
+    this.input = new Editor(this.tui, editorTheme, { paddingX: 0 });
     this.input.onSubmit = (value) => {
       this.followTranscript = true;
       this.onSubmitCallback(value);
     };
-    this.input.onEscape = () => {
+
+    // Shim Input-like API for backward compatibility
+    (this.input as any).setValue = (value: string) => this.input.setText(value);
+    (this.input as any).getValue = () => this.input.getText();
+    (this.input as any).onEscape = () => {
       this.onDismissCallback();
     };
 
@@ -155,10 +178,10 @@ export class BtwOverlayComponent extends Container implements Focusable {
     this.tui.terminal?.write?.("\x1b[?1000h\x1b[?1006h");
 
     const originalHandleInput = this.input.handleInput.bind(this.input);
-    this.input.handleInput = (data: string) => {
+    (this.input as any).handleInput = (data: string) => {
       if (options.keybindings.matches(data, "app.clear")) {
-        if (this.input.getValue().length > 0) {
-          this.input.setValue("");
+        if (this.input.getText().length > 0) {
+          this.input.setText("");
           this.tui.requestRender();
           return;
         }
@@ -197,6 +220,46 @@ export class BtwOverlayComponent extends Container implements Focusable {
 
   private bottomLine(innerWidth: number): string {
     return this.theme.fg("border", `╰${"─".repeat(innerWidth)}╯`);
+  }
+
+  private dimNonAnsiParts(text: string): string {
+    if (!text.includes("\x1b[")) {
+      return this.theme.fg("dim", text);
+    }
+    return text
+      .split(/(\x1b\[[0-9;]*m)/g)
+      .filter((part) => part.length > 0)
+      .map((part) => (/\x1b\[[0-9;]*m/.test(part) ? part : this.theme.fg("dim", part)))
+      .join("");
+  }
+
+  private colorizeDetails(raw: string): string {
+    const segments: string[] = [];
+    const regex = /<(\w+)>(.*?)<\/\1>/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(raw)) !== null) {
+      const before = raw.slice(lastIndex, match.index);
+      if (before) {
+        segments.push(this.dimNonAnsiParts(before));
+      }
+      const colorName = match[1];
+      const content = match[2];
+      try {
+        segments.push(this.theme.fg(colorName as any, content));
+      } catch {
+        segments.push(this.dimNonAnsiParts(content));
+      }
+      lastIndex = regex.lastIndex;
+    }
+    const after = raw.slice(lastIndex);
+    if (after) {
+      segments.push(this.dimNonAnsiParts(after));
+    }
+    if (segments.length === 0) {
+      return this.theme.fg("dim", raw);
+    }
+    return segments.join("");
   }
 
   private wrapTranscript(innerWidth: number): string[] {
@@ -247,6 +310,39 @@ export class BtwOverlayComponent extends Container implements Focusable {
       return;
     }
 
+    if (this.injectSelectMode) {
+      if (data === "\x1b[A") {
+        this.injectSelectIndex = Math.max(0, this.injectSelectIndex - 1);
+        this.tui.requestRender();
+        return;
+      }
+      if (data === "\x1b[B") {
+        this.injectSelectIndex = Math.min(this.injectSelectItems.length - 1, this.injectSelectIndex + 1);
+        this.tui.requestRender();
+        return;
+      }
+      if (data === " ") {
+        const item = this.injectSelectItems[this.injectSelectIndex];
+        if (item) {
+          item.checked = !item.checked;
+          this.tui.requestRender();
+        }
+        return;
+      }
+      if (data === "\r" || data === "\n") {
+        const selectedIndices = this.injectSelectItems
+          .map((item, i) => (item.checked ? i : -1))
+          .filter((i) => i !== -1);
+        this.onInjectSelectCallback?.(selectedIndices, this.injectSelectInstructions);
+        return;
+      }
+      if (data === "\x1b" || matchesKey(data, Key.escape)) {
+        this.exitInjectSelectMode();
+        return;
+      }
+      return;
+    }
+
     const mouseScrollDelta = this.getMouseScrollDelta(data);
     if (mouseScrollDelta !== null) {
       this.scrollTranscript(mouseScrollDelta);
@@ -268,17 +364,15 @@ export class BtwOverlayComponent extends Container implements Focusable {
     this.input.handleInput(data);
   }
 
-  private inputFrameLine(dialogWidth: number): string {
+  private inputFrameLines(dialogWidth: number): string[] {
     const targetWidth = Math.max(1, dialogWidth - 2);
     const previousFocused = this.input.focused;
-    // Input.render() emits CURSOR_MARKER when focused. In overlay mode that APC marker
-    // can skew width/composition on this one row before the TUI strips it, producing a
-    // right-edge notch and shifted border. Render the embedded input unfocused here so
-    // the row stays geometrically stable while the overlay still owns keyboard input.
+    // Editor.render() emits CURSOR_MARKER when focused. Render unfocused so the
+    // overlay frame stays geometrically stable while the overlay still owns keyboard input.
     this.input.focused = false;
     try {
-      const inputLine = this.input.render(targetWidth)[0] ?? "";
-      return `${this.theme.fg("border", "│")}${inputLine}${this.theme.fg("border", "│")}`;
+      const rendered = this.input.render(targetWidth);
+      return rendered.map((line) => `${this.theme.fg("border", "│")}${line}${this.theme.fg("border", "│")}`);
     } finally {
       this.input.focused = previousFocused;
     }
@@ -287,11 +381,16 @@ export class BtwOverlayComponent extends Container implements Focusable {
   override render(width: number): string[] {
     const dialogWidth = Math.max(24, width);
     const innerWidth = Math.max(22, dialogWidth - 2);
-    this.transcriptLines = this.renderTranscript(this.readTranscriptEntries(), this.theme, innerWidth, this.config);
+    if (this.injectSelectMode) {
+      this.transcriptLines = this.buildInjectSelectLines(innerWidth);
+    } else {
+      this.transcriptLines = this.renderTranscript(this.readTranscriptEntries(), this.theme, innerWidth, this.config);
+    }
     const transcriptLines = this.wrapTranscript(innerWidth);
     const dialogHeight = this.getDialogHeight();
-    const chromeHeight = 9;
-    const transcriptHeight = Math.max(1, dialogHeight - chromeHeight);
+    const inputLines = this.inputFrameLines(dialogWidth);
+    const baseChromeHeight = 8;
+    const transcriptHeight = Math.max(1, dialogHeight - baseChromeHeight - inputLines.length);
     this.transcriptViewportHeight = transcriptHeight;
 
     const maxScroll = Math.max(0, transcriptLines.length - transcriptHeight);
@@ -318,7 +417,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
 
     const lines = [this.titleLine(innerWidth)];
 
-    lines.push(this.frameLine(this.theme.fg("dim", this.detailsTextValue.trim()), innerWidth));
+    lines.push(this.frameLine(this.detailsTextValue.trim(), innerWidth));
     lines.push(this.frameLine(this.theme.fg("dim", summary), innerWidth));
     lines.push(this.ruleLine(innerWidth));
 
@@ -331,7 +430,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
 
     lines.push(this.ruleLine(innerWidth));
     lines.push(this.frameLine(this.theme.fg("warning", this.statusTextValue.trim()), innerWidth));
-    lines.push(this.inputFrameLine(dialogWidth));
+    lines.push(...inputLines);
     lines.push(this.frameLine(this.theme.fg("dim", this.hintsTextValue.trim()), innerWidth));
     lines.push(this.bottomLine(innerWidth));
 
@@ -339,12 +438,15 @@ export class BtwOverlayComponent extends Container implements Focusable {
   }
 
   setDraft(value: string): void {
-    this.input.setValue(value);
+    if (this.injectSelectMode) {
+      return;
+    }
+    this.input.setText(value);
     this.tui.requestRender();
   }
 
   getDraft(): string {
-    return this.input.getValue();
+    return this.input.getText();
   }
 
   getTranscriptEntries(): BtwTranscript {
@@ -352,9 +454,13 @@ export class BtwOverlayComponent extends Container implements Focusable {
   }
 
   refresh(): void {
+    if (this.injectSelectMode) {
+      this.tui.requestRender();
+      return;
+    }
     this.modeTextValue = `${getOverlayTitle(this.getMode())} · hidden thread preserved`;
     this.modeText.setText(this.modeTextValue);
-    this.detailsTextValue = this.getDetails();
+    this.detailsTextValue = this.colorizeDetails(this.getDetails());
     this.detailsText.setText(this.detailsTextValue);
     const entries = this.readTranscriptEntries();
     const exchanges = getCompletedExchangeCount(entries);
@@ -374,5 +480,61 @@ export class BtwOverlayComponent extends Container implements Focusable {
     this.hintsTextValue = "Scroll wheel ↑↓ PgUp/PgDn · Enter · Alt+/ focus · Esc";
     this.hintsText.setText(this.hintsTextValue);
     this.tui.requestRender();
+  }
+
+  enterInjectSelectMode(instructions: string): void {
+    this.injectSelectMode = true;
+    this.injectSelectInstructions = instructions;
+    this.injectSelectItems = this.getInjectSelectItems();
+    this.injectSelectIndex = 0;
+    this.statusTextValue = "Select BTW exchanges to inject";
+    this.statusText.setText(this.statusTextValue);
+    this.hintsTextValue = "[↑/↓] Navigate · [Space] Toggle · [Enter] Inject Selected · [Esc] Cancel";
+    this.hintsText.setText(this.hintsTextValue);
+    this.input.setText("");
+    this.tui.requestRender();
+  }
+
+  exitInjectSelectMode(): void {
+    this.injectSelectMode = false;
+    this.injectSelectItems = [];
+    this.injectSelectIndex = 0;
+    this.injectSelectInstructions = "";
+    this.refresh();
+  }
+
+  private getInjectSelectItems(): Array<{ userText: string; checked: boolean }> {
+    const entries = this.readTranscriptEntries();
+    const items: Array<{ userText: string; checked: boolean }> = [];
+    let currentUser = "";
+    for (const entry of entries) {
+      if (entry.type === "user-message") {
+        currentUser = entry.text.split("\n")[0];
+      }
+      if (entry.type === "assistant-text" && !entry.streaming) {
+        items.push({ userText: currentUser || "(No user prompt)", checked: false });
+        currentUser = "";
+      }
+    }
+    return items;
+  }
+
+  private buildInjectSelectLines(innerWidth: number): string[] {
+    const lines: string[] = [];
+    lines.push(this.theme.fg("accent", this.theme.bold("Select BTW exchanges to inject")));
+    lines.push("");
+    for (let i = 0; i < this.injectSelectItems.length; i++) {
+      const item = this.injectSelectItems[i];
+      const checkbox = item.checked ? "☑" : "☐";
+      const prefix = `${checkbox} ${i + 1} `;
+      const preview = truncateToWidth(item.userText, Math.max(1, innerWidth - visibleWidth(prefix)), "…");
+      lines.push(`${prefix}${preview}`);
+    }
+    if (this.injectSelectItems.length === 0) {
+      lines.push(this.theme.fg("dim", "No exchanges available."));
+    }
+    lines.push("");
+    lines.push(this.theme.fg("dim", "[↑/↓] Navigate · [Space] Toggle · [Enter] Inject Selected · [Esc] Cancel"));
+    return lines;
   }
 }

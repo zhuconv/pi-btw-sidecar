@@ -11,7 +11,7 @@ import { type AssistantMessage, type Message, type ThinkingLevel as AiThinkingLe
 import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import type { BtwAgentDefinition } from "./agent-discovery";
 import type { BtwConfig, BtwModalSize } from "./config";
-import { resolveBtwIcons, type BtwIconSet } from "./icons";
+import { resolveBtwIcons, resolveBtwAgentIcon, type BtwIconSet } from "./icons";
 
 const BTW_MESSAGE_TYPE = "btw-note";
 const BTW_ENTRY_TYPE = "btw-thread-entry";
@@ -30,7 +30,7 @@ const BTW_MODAL_SIZE_PRESETS: Record<
 > = {
   small: { widthRatio: 0.64, heightRatio: 0.58, minWidth: 56, maxWidth: 96, minRows: 14 },
   medium: { widthRatio: 0.78, heightRatio: 0.78, minWidth: 72, maxWidth: 132, minRows: 18 },
-  large: { widthRatio: 0.92, heightRatio: 0.9, minWidth: 80, maxWidth: 160, minRows: 22 },
+  large: { widthRatio: 0.92, heightRatio: 0.94, minWidth: 80, maxWidth: 200, minRows: 22 },
 };
 
 function safePositiveInteger(value: number | undefined, fallback: number): number {
@@ -227,6 +227,8 @@ type OverlayRuntime = {
   close?: () => void;
   finish?: () => void;
   setDraft?: (value: string) => void;
+  enterInjectSelect?: (instructions: string) => void;
+  exitInjectSelect?: () => void;
   closed?: boolean;
 };
 
@@ -1233,6 +1235,7 @@ export function buildOverlayTranscript(
   theme: ExtensionContext["ui"]["theme"],
   contentWidth = 80,
   options: Pick<BtwConfig, "showReasoning"> = { showReasoning: true },
+  agentName?: string,
 ): string[] {
   if (entries.length === 0) {
     return [theme.fg("dim", "No BTW thread yet. Ask a side question to start one.")];
@@ -1242,7 +1245,7 @@ export function buildOverlayTranscript(
   const userBadge = buildTranscriptBadge(theme, "You", "userMessageBg", "accent");
   const thinkingBadge = buildTranscriptBadge(theme, "Thinking", "toolPendingBg", "warning");
   const toolBadge = buildTranscriptBadge(theme, "Tool", "toolPendingBg", "warning");
-  const assistantBadge = buildTranscriptBadge(theme, "Assistant", "customMessageBg", "success");
+  const assistantBadge = buildTranscriptBadge(theme, agentName ?? "Assistant", "customMessageBg", "success");
   const separator = theme.fg("borderMuted", "────────────────────────────────────────");
   const blockIndent = "    ";
   const resultIndent = blockIndent;
@@ -1509,10 +1512,8 @@ function createBtwMessageComponent(lines: string[], theme: ExtensionContext["ui"
 
 export default function (pi: ExtensionAPI) {
   let debugLogger: import("./debug-logger").BtwDebugLogger | null = null;
-  let cachedBtwIcons: BtwIconSet | null = null;
   function getBtwIcons(): BtwIconSet {
-    cachedBtwIcons ??= resolveBtwIcons().icons;
-    return cachedBtwIcons;
+    return resolveBtwIcons().icons;
   }
 
   let configPromise: Promise<{ config: BtwConfig; diagnostics: string[] }> | null = null;
@@ -1531,6 +1532,38 @@ export default function (pi: ExtensionAPI) {
   let lastUiContext: ExtensionContext | ExtensionCommandContext | null = null;
   let activeBtwSession: BtwSessionRuntime | null = null;
 
+  function getThinkingColor(level: SessionThinkingLevel | "unknown"): string {
+    switch (level) {
+      case "off":
+        return "thinkingOff";
+      case "minimal":
+        return "thinkingMinimal";
+      case "low":
+        return "thinkingLow";
+      case "medium":
+        return "thinkingMedium";
+      case "high":
+        return "thinkingHigh";
+      case "xhigh":
+        return "thinkingXhigh";
+      default:
+        return "dim";
+    }
+  }
+
+  function hexToTruecolorAnsiFg(hex: string | undefined): string | undefined {
+    if (!hex || !/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+      return undefined;
+    }
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+      return undefined;
+    }
+    return `\x1b[38;2;${r};${g};${b}m`;
+  }
+
   function buildOverlayDetails(ctx?: ExtensionContext | ExtensionCommandContext | null): string {
     const agentName = activeBtwSession?.agentName ?? selectedBtwAgentName ?? "none";
     const agent = selectedBtwAgent;
@@ -1539,11 +1572,20 @@ export default function (pi: ExtensionAPI) {
       : null;
     const model = btwModelOverride ?? ctx?.model ?? null;
     const agentModelLabel = agent?.model ? `${agent.model} (configured)` : null;
-    const modelLabel = activeModel?.label ?? (btwModelOverride && model ? formatModelRef(model) : agentModelLabel ?? (model ? formatModelRef(model) : "none"));
-    const modelSource = activeModel?.source ?? (btwModelOverride ? "override" : agentModelLabel ? "agent" : model ? "main" : "none");
+    let modelLabel = activeModel?.label ?? (btwModelOverride && model ? formatModelRef(model) : agentModelLabel ?? (model ? formatModelRef(model) : "none"));
+    // Strip redundant API source labels and source parentheticals from modal metadata.
+    modelLabel = modelLabel.replace(/\s+\([^)]+\)/g, "").trim();
     const thinkingLevel = activeBtwSession?.thinkingLevel ?? btwThinkingOverride ?? agent?.thinkingLevel ?? (pi.getThinkingLevel() as SessionThinkingLevel | undefined) ?? "unknown";
-    const thinkingSource = activeBtwSession?.thinkingSource ?? (btwThinkingOverride ? "override" : agent?.thinkingLevel ? "agent" : "main");
-    return `Agent: ${agentName} · Model: ${modelLabel} (${modelSource}) · Thinking: ${thinkingLevel} (${thinkingSource})`;
+    const icons = getBtwIcons();
+    const agentIcon = resolveBtwAgentIcon(agentName);
+    const thinkingColor = getThinkingColor(thinkingLevel);
+    const modelColorAnsi = hexToTruecolorAnsiFg(agent?.color);
+    // Use the agent's frontmatter color for model metadata when available.
+    // Fall back to the `accent` theme color when no explicit safe color is defined.
+    const modelSegment = modelColorAnsi
+      ? `${modelColorAnsi}${icons.model} ${modelLabel}\x1b[39m`
+      : `<accent>${icons.model} ${modelLabel}</accent>`;
+    return `${agentIcon} ${agentName} · ${icons.session} ${pendingMode} · ${modelSegment} · <${thinkingColor}>${icons.thinking} ${thinkingLevel}</${thinkingColor}>`;
   }
 
   function syncUi(ctx?: ExtensionContext | ExtensionCommandContext): void {
@@ -1562,6 +1604,10 @@ export default function (pi: ExtensionAPI) {
 
   function formatPendingStatus(message: string): string {
     return `${getBtwIcons().pending} ${message}`;
+  }
+
+  function formatThinkingStatus(): string {
+    return `${getBtwIcons().thinking} Thinking…`;
   }
 
   async function getBtwRuntimeConfig(ctx?: ExtensionContext | ExtensionCommandContext): Promise<BtwConfig> {
@@ -1638,6 +1684,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     applyTranscriptEvent(transcriptState, event);
+
+    if (event.type === "message_update" && (event as any).assistantMessageEvent?.type === "thinking_delta") {
+      setOverlayStatus(formatThinkingStatus(), ctx);
+    }
 
     if (event.type === "tool_execution_start") {
       setOverlayStatus(formatPendingStatus(`running tool: ${event.toolName}`), ctx);
@@ -2115,7 +2165,8 @@ export default function (pi: ExtensionAPI) {
             getMode: () => pendingMode,
             getDetails: () => overlayDetails,
             config: runtimeConfig,
-            renderTranscript: buildOverlayTranscript,
+            renderTranscript: (entries, theme, width, options) =>
+              buildOverlayTranscript(entries, theme, width, options, activeBtwSession?.agentName ?? selectedBtwAgentName ?? "Assistant"),
             resolveModalDimensions: resolveBtwModalDimensions,
             onSubmit: (value) => {
               void submitFromOverlay(ctx, value);
@@ -2126,6 +2177,9 @@ export default function (pi: ExtensionAPI) {
             onUnfocus: () => {
               overlayRuntime?.handle?.unfocus();
               overlayRuntime?.refresh?.();
+            },
+            onInjectSelect: (selectedIndices, instructions) => {
+              void handleInjectSelect(ctx as ExtensionCommandContext, selectedIndices, instructions);
             },
           });
 
@@ -2142,6 +2196,12 @@ export default function (pi: ExtensionAPI) {
             overlayDraft = overlay.getDraft();
             overlay.dispose();
             closeRuntime();
+          };
+          runtime.enterInjectSelect = (instructions: string) => {
+            overlay.enterInjectSelectMode(instructions);
+          };
+          runtime.exitInjectSelect = () => {
+            overlay.exitInjectSelectMode();
           };
 
           subscribeOverlayToActiveBtwSession(ctx);
@@ -2330,6 +2390,44 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
 
+    if (name === "btw:inject-select") {
+      if (pendingThread.length === 0) {
+        notify(ctx, "No BTW thread to inject.", "warning");
+        return true;
+      }
+
+      if (!overlayRuntime && ctx.hasUI) {
+        setOverlayStatus(formatPendingStatus("selecting turns to inject..."), ctx);
+        const exchanges = getPendingThreadForHandoff();
+        const labels = exchanges.map((ex, i) => `${i + 1}. ${ex.user.split("\n")[0]}`);
+        const selectedLabel = await ctx.ui.select("Select BTW exchange to inject", labels);
+        if (!selectedLabel) {
+          setOverlayStatus("BTW exchange selection canceled.", ctx);
+          return true;
+        }
+        const selectedIndex = labels.indexOf(selectedLabel);
+        if (selectedIndex === -1 || !exchanges[selectedIndex]) {
+          setOverlayStatus("Unknown BTW exchange selection.", ctx);
+          return true;
+        }
+        const selected = [exchanges[selectedIndex]];
+        const content = trimmedArgs
+          ? `Here is a side conversation I had. ${trimmedArgs}\n\n${formatThread(selected)}`
+          : `Here is a side conversation I had for additional context:\n\n${formatThread(selected)}`;
+        sendThreadToMain(ctx, content);
+        const count = selected.length;
+        await resetThread(ctx);
+        dismissOverlay();
+        notify(ctx, `Injected selected BTW thread (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+        return true;
+      }
+
+      setOverlayStatus(formatPendingStatus("selecting turns to inject..."), ctx);
+      await ensureOverlay(ctx);
+      overlayRuntime?.enterInjectSelect?.(trimmedArgs);
+      return true;
+    }
+
     if (name === "btw:inject") {
       if (pendingThread.length === 0) {
         notify(ctx, "No BTW thread to inject.", "warning");
@@ -2392,7 +2490,7 @@ export default function (pi: ExtensionAPI) {
 
   function parseOverlayBtwCommand(value: string): { name: string; args: string } | null {
     const trimmed = value.trim();
-    const match = trimmed.match(/^\/(btw:(?:new|tangent|clear|inject|summarize|agent|model|thinking))(?:\s+(.*))?$/);
+    const match = trimmed.match(/^\/(btw:(?:new|tangent|clear|inject(?:-select)?|summarize|agent|model|thinking))(?:\s+(.*))?$/);
     if (!match) {
       return null;
     }
@@ -2646,6 +2744,33 @@ export default function (pi: ExtensionAPI) {
     return pendingThread.map((entry) => ({ user: entry.question, assistant: entry.answer }));
   }
 
+  async function handleInjectSelect(
+    ctx: ExtensionCommandContext,
+    selectedIndices: number[],
+    instructions: string,
+  ): Promise<void> {
+    const exchanges = getPendingThreadForHandoff();
+    const selected = selectedIndices.map((i) => exchanges[i]).filter(Boolean);
+    if (selected.length === 0) {
+      notify(ctx, "No exchanges selected to inject.", "warning");
+      overlayRuntime?.exitInjectSelect?.();
+      return;
+    }
+
+    setOverlayStatus(formatPendingStatus("injecting selected turns into the main session..."), ctx);
+    await ensureOverlay(ctx);
+
+    const content = instructions
+      ? `Here is a side conversation I had. ${instructions}\n\n${formatThread(selected)}`
+      : `Here is a side conversation I had for additional context:\n\n${formatThread(selected)}`;
+
+    sendThreadToMain(ctx, content);
+    const count = selected.length;
+    await resetThread(ctx);
+    dismissOverlay();
+    notify(ctx, `Injected selected BTW thread (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+  }
+
   async function getBtwHandoffThread(
     ctx: ExtensionCommandContext,
   ): Promise<{ sessionRuntime: BtwSessionRuntime | null; thread: BtwHandoffExchange[] }> {
@@ -2807,6 +2932,13 @@ export default function (pi: ExtensionAPI) {
     description: "Inject the full BTW thread into the main agent as a user message.",
     handler: async (args, ctx) => {
       await dispatchBtwCommand("btw:inject", args, ctx);
+    },
+  });
+
+  pi.registerCommand("btw:inject-select", {
+    description: "Open an inline chooser to select specific BTW exchanges to inject into the main agent.",
+    handler: async (args, ctx) => {
+      await dispatchBtwCommand("btw:inject-select", args, ctx);
     },
   });
 

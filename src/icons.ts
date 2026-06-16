@@ -1,10 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type BtwIconMode = "nerd" | "fallback";
+export type BtwIconMode = "nerd" | "unicode" | "emoji" | "fallback";
 export type BtwIconPreference = "auto" | BtwIconMode;
 
 export type BtwIconSet = {
+  agents: string;
+  session: string;
+  model: string;
+  thinking: string;
   pending: string;
   error: string;
 };
@@ -22,14 +26,70 @@ export type ResolvedBtwIcons = {
 };
 
 const NERD_FONT_ICONS: BtwIconSet = {
-  pending: "",
-  error: "",
+  agents: "\uF0C0",
+  session: "\uF550",
+  model: "\uEC19",
+  thinking: "\uF0EB",
+  pending: "\u{F0150}",
+  error: "\uF071",
 };
 
-const EMOJI_FALLBACK_ICONS: BtwIconSet = {
+const UNICODE_ICONS: BtwIconSet = {
+  agents: "⍟",
+  session: "◍",
+  model: "◈",
+  thinking: "∿",
+  pending: "⌛",
+  error: "⚠",
+};
+
+const EMOJI_ICONS: BtwIconSet = {
+  agents: "🧭",
+  session: "🆔",
+  model: "◈",
+  thinking: "🧠",
   pending: "⏳",
+  error: "⚠️",
+};
+
+const FALLBACK_ICONS: BtwIconSet = {
+  ...EMOJI_ICONS,
   error: "❌",
 };
+
+const NERD_AGENT_ICONS: Record<string, string> = {
+  ask: "\uF059",
+  architect: "\uF1AD",
+  code: "\uF121",
+  debug: "\uF188",
+  devops: "\uF233",
+  docs: "\uF02D",
+  git: "\uF126",
+  orchestrator: "\uF0AE",
+  product: "\uF0CA",
+  refactor: "\uF021",
+  researcher: "\uF0AC",
+  security: "\uF023",
+  test: "\uF0C3",
+  ui: "\uF1FC",
+};
+
+function normalizeAgentName(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+export function getBtwAgentIcon(agentName: string | null | undefined, mode: BtwIconMode): string {
+  const normalizedName = normalizeAgentName(agentName);
+  if (mode === "nerd") {
+    return NERD_AGENT_ICONS[normalizedName] ?? NERD_FONT_ICONS.agents;
+  }
+  return iconsForMode(mode).agents;
+}
+
+export function resolveBtwAgentIcon(agentName: string | null | undefined): string {
+  const resolved = resolveBtwIcons();
+  return getBtwAgentIcon(agentName, resolved.mode);
+}
 
 const WINDOWS_TERMINAL_SETTINGS_CANDIDATES = [
   ["Packages", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", "LocalState", "settings.json"],
@@ -84,7 +144,7 @@ function parsePreference(value: string | undefined): BtwIconPreference | null {
   }
 
   const normalized = value.trim().toLowerCase();
-  if (normalized === "auto" || normalized === "nerd" || normalized === "fallback") {
+  if (normalized === "auto" || normalized === "nerd" || normalized === "unicode" || normalized === "emoji" || normalized === "fallback") {
     return normalized;
   }
 
@@ -377,7 +437,16 @@ function resolveAutoMode(context: BtwIconDetectionContext): BtwIconMode {
 }
 
 function iconsForMode(mode: BtwIconMode): BtwIconSet {
-  return mode === "nerd" ? NERD_FONT_ICONS : EMOJI_FALLBACK_ICONS;
+  switch (mode) {
+    case "nerd":
+      return NERD_FONT_ICONS;
+    case "unicode":
+      return UNICODE_ICONS;
+    case "emoji":
+      return EMOJI_ICONS;
+    default:
+      return FALLBACK_ICONS;
+  }
 }
 
 export function resolveBtwIconsForContext(context: BtwIconDetectionContext): ResolvedBtwIcons {
