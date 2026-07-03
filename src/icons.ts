@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isRecord } from "./record-utils";
 
 export type BtwIconMode = "nerd" | "unicode" | "emoji" | "fallback";
 export type BtwIconPreference = "auto" | BtwIconMode;
@@ -165,14 +166,34 @@ function resolvePreference(env: Record<string, string | undefined>): BtwIconPref
   return "auto";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+interface JsonStringScanState {
+  result: string;
+  inString: boolean;
+  escaped: boolean;
+}
+
+function consumeJsonStringChar(current: string, state: JsonStringScanState): boolean {
+  if (state.inString) {
+    state.result += current;
+    if (state.escaped) {
+      state.escaped = false;
+    } else if (current === "\\") {
+      state.escaped = true;
+    } else if (current === '"') {
+      state.inString = false;
+    }
+    return true;
+  }
+  if (current === '"') {
+    state.inString = true;
+    state.result += current;
+    return true;
+  }
+  return false;
 }
 
 function stripJsonComments(value: string): string {
-  let result = "";
-  let inString = false;
-  let escaped = false;
+  const state: JsonStringScanState = { result: "", inString: false, escaped: false };
   let inLineComment = false;
   let inBlockComment = false;
 
@@ -183,7 +204,7 @@ function stripJsonComments(value: string): string {
     if (inLineComment) {
       if (current === "\n") {
         inLineComment = false;
-        result += current;
+        state.result += current;
       }
       continue;
     }
@@ -196,21 +217,7 @@ function stripJsonComments(value: string): string {
       continue;
     }
 
-    if (inString) {
-      result += current;
-      if (escaped) {
-        escaped = false;
-      } else if (current === "\\") {
-        escaped = true;
-      } else if (current === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (current === '"') {
-      inString = true;
-      result += current;
+    if (consumeJsonStringChar(current, state)) {
       continue;
     }
 
@@ -226,40 +233,24 @@ function stripJsonComments(value: string): string {
       continue;
     }
 
-    result += current;
+    state.result += current;
   }
 
-  return result;
+  return state.result;
 }
 
 function stripTrailingCommas(value: string): string {
-  let result = "";
-  let inString = false;
-  let escaped = false;
+  const state: JsonStringScanState = { result: "", inString: false, escaped: false };
 
   for (let index = 0; index < value.length; index += 1) {
     const current = value[index];
 
-    if (inString) {
-      result += current;
-      if (escaped) {
-        escaped = false;
-      } else if (current === "\\") {
-        escaped = true;
-      } else if (current === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (current === '"') {
-      inString = true;
-      result += current;
+    if (consumeJsonStringChar(current, state)) {
       continue;
     }
 
     if (current !== ",") {
-      result += current;
+      state.result += current;
       continue;
     }
 
@@ -273,24 +264,24 @@ function stripTrailingCommas(value: string): string {
       continue;
     }
 
-    result += current;
+    state.result += current;
   }
 
-  return result;
+  return state.result;
 }
 
 function parseSettingsJson(raw: string): Record<string, unknown> | null {
   const withoutBom = raw.replace(/^\uFEFF/, "");
 
   try {
-    const parsed = JSON.parse(withoutBom);
+    const parsed: unknown = JSON.parse(withoutBom);
     return isRecord(parsed) ? parsed : null;
   } catch {
     const withoutComments = stripJsonComments(withoutBom);
     const withoutTrailingCommas = stripTrailingCommas(withoutComments);
 
     try {
-      const parsed = JSON.parse(withoutTrailingCommas);
+      const parsed: unknown = JSON.parse(withoutTrailingCommas);
       return isRecord(parsed) ? parsed : null;
     } catch {
       return null;

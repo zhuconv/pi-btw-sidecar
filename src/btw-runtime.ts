@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { formatBtwUsage } from "./btw-usage";
+import { isBtwConfigEnabledSync } from "./config";
 
 const BTW_MESSAGE_TYPE = "btw-note";
 const BTW_FOCUS_SHORTCUTS = ["alt+/", "ctrl+alt+w"] as const;
@@ -70,43 +72,6 @@ class BtwMessageComponent implements Component {
   invalidate(): void {}
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function getNumericUsageField(usage: unknown, fieldNames: string[]): number | undefined {
-  if (!isRecord(usage)) {
-    return undefined;
-  }
-
-  for (const fieldName of fieldNames) {
-    const value = usage[fieldName];
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
-  }
-
-  return undefined;
-}
-
-function formatBtwUsage(usage: unknown): string | null {
-  const input = getNumericUsageField(usage, ["input", "inputTokens", "promptTokens", "prompt_tokens"]);
-  const output = getNumericUsageField(usage, ["output", "outputTokens", "completionTokens", "completion_tokens"]);
-  const cacheRead = getNumericUsageField(usage, ["cacheRead", "cache_read", "cachedTokens", "cached_tokens"]);
-  const cacheWrite = getNumericUsageField(usage, ["cacheWrite", "cache_write"]);
-  const total =
-    getNumericUsageField(usage, ["totalTokens", "total", "total_tokens"]) ??
-    (input !== undefined || output !== undefined || cacheRead !== undefined || cacheWrite !== undefined
-      ? (input ?? 0) + (output ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
-      : undefined);
-
-  if (input === undefined && output === undefined && total === undefined) {
-    return null;
-  }
-
-  return `tokens: in ${input ?? "?"} · out ${output ?? "?"} · total ${total ?? "?"}`;
-}
-
 function isVisibleBtwMessage(message: { role: string; customType?: string }): boolean {
   return message.role === "custom" && message.customType === BTW_MESSAGE_TYPE;
 }
@@ -146,8 +111,8 @@ async function createBtwRuntimeDelegate(pi: ExtensionAPI): Promise<BtwRuntimeDel
         };
       }
 
-      const value = Reflect.get(target, property, receiver);
-      return typeof value === "function" ? value.bind(target) : value;
+      const value: unknown = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? (value.bind(target) as unknown) : value;
     },
   }) as unknown as ExtensionAPI;
 
@@ -171,7 +136,11 @@ async function dispatchRuntimeEvent(
   return results;
 }
 
-export default function (pi: ExtensionAPI) {
+export default function btwRuntime(pi: ExtensionAPI) {
+  if (!isBtwConfigEnabledSync()) {
+    return;
+  }
+
   let runtimePromise: Promise<BtwRuntimeDelegate> | null = null;
 
   const getRuntime = () => {

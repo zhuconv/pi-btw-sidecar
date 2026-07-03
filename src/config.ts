@@ -1,10 +1,13 @@
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isRecord } from "./record-utils";
 
 export type BtwModalSize = "small" | "medium" | "large";
 
 export type BtwConfig = {
+  enabled: boolean;
   debug: boolean;
   showReasoning: boolean;
   modalSize: BtwModalSize;
@@ -16,6 +19,7 @@ export type BtwConfigLoadResult = {
 };
 
 export const DEFAULT_CONFIG: BtwConfig = {
+  enabled: true,
   debug: false,
   showReasoning: true,
   modalSize: "medium",
@@ -27,12 +31,8 @@ export function getDefaultExtensionRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+export function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 export async function loadBtwConfig(extensionRoot = getDefaultExtensionRoot()): Promise<BtwConfigLoadResult> {
@@ -49,6 +49,14 @@ export async function loadBtwConfig(extensionRoot = getDefaultExtensionRoot()): 
         config,
         diagnostics: [`${configPath}: expected BTW config to be a JSON object.`],
       };
+    }
+
+    if (parsed.enabled !== undefined) {
+      if (typeof parsed.enabled === "boolean") {
+        config.enabled = parsed.enabled;
+      } else {
+        diagnostics.push(`${configPath}: expected optional "enabled" to be a boolean.`);
+      }
     }
 
     if (parsed.debug !== undefined) {
@@ -86,5 +94,26 @@ export async function loadBtwConfig(extensionRoot = getDefaultExtensionRoot()): 
       config: { ...DEFAULT_CONFIG },
       diagnostics: [`${configPath}: failed to read BTW config (${message}).`],
     };
+  }
+}
+
+/**
+ * Synchronously reads only the `enabled` flag from config.json.
+ * Used at factory load time to skip all registration when the extension is disabled.
+ */
+export function isBtwConfigEnabledSync(extensionRoot = getDefaultExtensionRoot()): boolean {
+  const configPath = join(extensionRoot, "config.json");
+  if (!existsSync(configPath)) {
+    return true;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
+    if (!isRecord(parsed)) {
+      return true;
+    }
+    return parsed.enabled !== false;
+  } catch {
+    return true;
   }
 }

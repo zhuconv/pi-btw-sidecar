@@ -4,19 +4,19 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { BtwOverlayComponent } from "../btw-overlay";
-import btwExtension from "../btw-runtime";
-import { buildOverlayTranscript, resolveBtwModalDimensions } from "../btw-runtime-core";
-import { resolveBtwIconsForContext } from "../icons";
+import { BtwOverlayComponent } from "../src/btw-overlay";
+import btwExtension from "../src/btw-runtime";
+import { buildOverlayTranscript, resolveBtwModalDimensions } from "../src/btw-runtime-core";
+import { resolveBtwIconsForContext } from "../src/icons";
 import {
   discoverBtwAgents,
   findBtwAgentByName,
   parseBtwAgentMarkdown,
   resetBtwAgentDiscoveryCache,
-} from "../agent-discovery";
-import { buildBtwAgentSelectionMenu } from "../agent-selection-ui";
-import { loadBtwConfig } from "../config";
-import { createBtwDebugLogger } from "../debug-logger";
+} from "../src/agent-discovery";
+import { buildBtwAgentSelectionMenu } from "../src/agent-selection-ui";
+import { loadBtwConfig } from "../src/config";
+import { createBtwDebugLogger } from "../src/debug-logger";
 
 const temporaryRoots: string[] = [];
 const originalBtwIconMode = process.env.PI_BTW_SIDECAR_ICON_MODE;
@@ -593,6 +593,16 @@ function createHarness(
   registeredModels.set("openai-codex/gpt-5.5", { provider: "openai-codex", id: "gpt-5.5", api: "openai-codex-responses" });
   registeredModels.set("xiaomi-token-plan-sgp/mimo-v2.5-pro", { provider: "xiaomi-token-plan-sgp", id: "mimo-v2.5-pro", api: "anthropic-messages" });
   registeredModels.set("cloudflare/@cf/moonshotai/kimi-k2.6", { provider: "cloudflare", id: "@cf/moonshotai/kimi-k2.6", api: "openai-responses" });
+  // The default "code" agent (agent/agents/code.md) declares model
+  // `cloudflare-workers-ai/@cf/zai-org/glm-5.2` with reasoningEffort `xhigh`.
+  // Pre-register it so the mock modelRegistry.find() returns the real api
+  // (`openai-completions`, matching @earendil-works/pi-ai's generated catalog)
+  // and `reasoning: true` (also from the catalog) instead of the generic
+  // anthropic-messages fallback. The `reasoning` flag matters because
+  // shouldSkipTemperatureExtension() suppresses the inline temperature
+  // extension for reasoning models on OpenAI-compatible APIs, keeping
+  // getExtensions().extensions empty as the test asserts.
+  registeredModels.set("cloudflare-workers-ai/@cf/zai-org/glm-5.2", { provider: "cloudflare-workers-ai", id: "@cf/zai-org/glm-5.2", api: "openai-completions", reasoning: true });
   const mainSessionInputs: string[] = [];
 
   const ui = {
@@ -805,6 +815,39 @@ function createHarness(
   };
 }
 
+/**
+ * Resolves an agent's declared model reference through the harness
+ * modelRegistry, mirroring resolveModelReference() in btw-runtime-core.ts.
+ * Lets tests assert against environment-derived values instead of hardcoding
+ * workspace-specific model strings.
+ */
+async function resolveAgentFixture(harness: ReturnType<typeof createHarness>, agentName: string) {
+  const agent = await findBtwAgentByName(agentName);
+  if (!agent || !agent.model) throw new Error(`Agent "${agentName}" not found or has no model`);
+  const separatorIndex = agent.model.indexOf("/");
+  const provider = agent.model.slice(0, separatorIndex);
+  const modelId = agent.model.slice(separatorIndex + 1);
+  const model = harness.baseCtx.modelRegistry.find(provider, modelId) as {
+    provider: string;
+    id: string;
+    api: string;
+    reasoning?: unknown;
+  };
+  return { agent, model };
+}
+
+/**
+ * Mirrors shouldSkipTemperatureExtension() in btw-runtime-core.ts: reasoning
+ * models on OpenAI-compatible APIs suppress the inline temperature extension.
+ */
+function skipsTemperatureExtension(model: { api: string; id: string; reasoning?: unknown }): boolean {
+  const openAiApis = ["azure-openai-responses", "openai-codex-responses", "openai-completions", "openai-responses"];
+  if (!openAiApis.includes(String(model.api))) return false;
+  const id = String(model.id).split("/").pop()?.toLowerCase() || String(model.id).toLowerCase();
+  if (id.startsWith("gpt-5-chat")) return false;
+  return Boolean(model.reasoning) || /^o\d(?:$|[-.])/.test(id) || /^gpt-5(?:$|[-.])/.test(id) || /(?:^|[-.])codex(?:$|[-.])/.test(id);
+}
+
 describe("btw agent discovery and selection UI", () => {
   it("parses agent frontmatter and keeps the full markdown body as instructions", () => {
     const parsed = parseBtwAgentMarkdown(
@@ -897,10 +940,11 @@ describe("btw runtime behavior", () => {
 
     const selectedAgent = await findBtwAgentByName("code");
     expect(selectedAgent).toBeDefined();
+    const { model: codeModel } = await resolveAgentFixture(harness, "code");
     const options = createAgentSessionMock.mock.calls[0][0];
-    expect(options.model).toEqual({ provider: "openai-codex", id: "gpt-5.5", api: "openai-codex-responses" });
+    expect(options.model).toMatchObject({ provider: codeModel.provider, id: codeModel.id, api: codeModel.api });
     expect(options.modelRegistry).toBe(harness.baseCtx.modelRegistry);
-    expect(options.thinkingLevel).toBe("high");
+    expect(options.thinkingLevel).toBe(selectedAgent?.thinkingLevel);
     expect(options.noTools).toBe("all");
     expect(options.tools).toEqual([]);
     const systemPrompt = options.resourceLoader.getSystemPrompt();
@@ -936,12 +980,20 @@ describe("btw runtime behavior", () => {
     expect(getCustomEntries(harness.entries, "btw-agent-selection").at(-1)?.data).toMatchObject({ name: "ask" });
     await harness.command("btw", "ask question");
 
+    // Derive expected model from the "ask" agent definition so the test
+    // does not hardcode a workspace-specific model reference.
+    const { agent: askAgent, model: askModel } = await resolveAgentFixture(harness, "ask");
+
     const options = createAgentSessionMock.mock.calls[0][0];
-    expect(options.model).toMatchObject({ provider: "xiaomi-token-plan-sgp", id: "mimo-v2.5-pro", api: "anthropic-messages" });
-    expect(options.thinkingLevel).toBe("high");
+    expect(options.model).toMatchObject({ provider: askModel.provider, id: askModel.id, api: askModel.api });
+    expect(options.thinkingLevel).toBe(askAgent.thinkingLevel);
     expect(options.model.compat).toBeUndefined();
 
-    expect(options.resourceLoader.getExtensions().extensions).toHaveLength(1);
+    // The inline temperature extension is created only when the agent
+    // declares a temperature and the resolved model does not suppress it
+    // (reasoning models on OpenAI-compatible APIs skip it).
+    const expectedExtensions = askAgent.temperature !== undefined && !skipsTemperatureExtension(askModel) ? 1 : 0;
+    expect(options.resourceLoader.getExtensions().extensions).toHaveLength(expectedExtensions);
   });
 
   it("keeps BTW sub-session tools disabled even when active tools are available", async () => {
@@ -1116,9 +1168,10 @@ describe("btw runtime behavior", () => {
     await harness.command("btw", "first question");
 
     expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
+    const { model: defaultModel, agent: defaultAgent } = await resolveAgentFixture(harness, "code");
     const options = createAgentSessionMock.mock.calls[0][0];
-    expect(options.model).toEqual({ provider: "openai-codex", id: "gpt-5.5", api: "openai-codex-responses" });
-    expect(options.thinkingLevel).toBe("high");
+    expect(options.model).toMatchObject({ provider: defaultModel.provider, id: defaultModel.id, api: defaultModel.api });
+    expect(options.thinkingLevel).toBe(defaultAgent.thinkingLevel);
   });
 
   it("restores BTW override state from session history", async () => {
@@ -3049,8 +3102,11 @@ describe("btw runtime behavior", () => {
     overlay.refresh();
     const details = overlay["detailsText"].text;
 
-    expect(details).toContain("xiaomi-token-plan-sgp/mimo-v2.5-pro");
-    expect(details).not.toContain("(anthropic-messages)");
+    // Derive expected model from the "ask" agent so the test does not
+    // hardcode a workspace-specific model reference.
+    const { model: askModel } = await resolveAgentFixture(harness, "ask");
+    expect(details).toContain(`${askModel.provider}/${askModel.id}`);
+    expect(details).not.toContain(`(${askModel.api})`);
   });
 
   it("powerline metadata polish removes redundant agent source labels from modal metadata", async () => {
@@ -3065,7 +3121,10 @@ describe("btw runtime behavior", () => {
     overlay.refresh();
     const details = overlay["detailsText"].text;
 
-    expect(details).toContain("xiaomi-token-plan-sgp/mimo-v2.5-pro");
+    // Derive expected model from the "ask" agent so the test does not
+    // hardcode a workspace-specific model reference.
+    const { model: askModel } = await resolveAgentFixture(harness, "ask");
+    expect(details).toContain(`${askModel.provider}/${askModel.id}`);
     expect(details).not.toContain("(configured)");
   });
 
@@ -3163,7 +3222,7 @@ describe("btw configuration and debug logging", () => {
     await createBtwDebugLogger({ extensionRoot: root }).log("command", { name: "btw" });
 
     await expect(stat(join(root, "debug"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(result).toEqual({ config: { debug: false, showReasoning: true, modalSize: "medium" }, diagnostics: [] });
+    expect(result).toEqual({ config: { enabled: true, debug: false, showReasoning: true, modalSize: "medium" }, diagnostics: [] });
   });
 
   it("keeps disabled logging near-zero side-effect by not creating debug output when debug is false", async () => {
@@ -3174,16 +3233,16 @@ describe("btw configuration and debug logging", () => {
     await createBtwDebugLogger({ extensionRoot: root }).log("command", { name: "btw" });
 
     await expect(stat(join(root, "debug"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(result).toEqual({ config: { debug: false, showReasoning: true, modalSize: "medium" }, diagnostics: [] });
+    expect(result).toEqual({ config: { enabled: true, debug: false, showReasoning: true, modalSize: "medium" }, diagnostics: [] });
   });
 
   it("loads result-only display and modal size preferences from config", async () => {
     const root = await createTemporaryExtensionRoot();
-    await writeFile(join(root, "config.json"), JSON.stringify({ debug: false, showReasoning: false, modalSize: "large" }), "utf8");
+    await writeFile(join(root, "config.json"), JSON.stringify({ enabled: true, debug: false, showReasoning: false, modalSize: "large" }), "utf8");
 
     const result = await loadBtwConfig(root);
 
-    expect(result).toEqual({ config: { debug: false, showReasoning: false, modalSize: "large" }, diagnostics: [] });
+    expect(result).toEqual({ config: { enabled: true, debug: false, showReasoning: false, modalSize: "large" }, diagnostics: [] });
   });
 
   it("resolves supported modal size presets responsively", () => {
@@ -3233,7 +3292,7 @@ describe("btw configuration and debug logging", () => {
 
     const result = await loadBtwConfig(root);
 
-    expect(result.config).toEqual({ debug: false, showReasoning: true, modalSize: "medium" });
+    expect(result.config).toEqual({ enabled: true, debug: false, showReasoning: true, modalSize: "medium" });
     expect(result.diagnostics).toEqual([
       expect.stringContaining('expected optional "showReasoning" to be a boolean'),
       expect.stringContaining('expected optional "modalSize" to be one of: small, medium, large'),

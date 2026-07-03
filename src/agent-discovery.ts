@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { isNodeError } from "./config";
 
 export type BtwAgentThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -47,10 +48,6 @@ function rememberAgents(cacheKey: string, agents: BtwAgentDefinition[]): void {
   }
 
   agentDirectoryCache.set(cacheKey, cloneAgents(agents));
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }
 
 function extractBtwFrontmatter(rawContent: string): { frontmatter: Record<string, unknown>; body: string } | null {

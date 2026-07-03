@@ -7,11 +7,14 @@ import type {
   Extension,
   ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
-import { type AssistantMessage, type Message, type ThinkingLevel as AiThinkingLevel, type UserMessage } from "@earendil-works/pi-ai";
-import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
+import { type Api, type AssistantMessage, type Message, type Model, type ThinkingLevel as AiThinkingLevel, type UserMessage } from "@earendil-works/pi-ai";
+import type { OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import type { BtwAgentDefinition } from "./agent-discovery";
 import type { BtwConfig, BtwModalSize } from "./config";
 import { resolveBtwIcons, resolveBtwAgentIcon, type BtwIconSet } from "./icons";
+import { isRecord } from "./record-utils";
+import { getNumericUsageField } from "./btw-usage";
+import type { BtwTranscript, BtwTranscriptEntry } from "./btw-types";
 
 const BTW_MESSAGE_TYPE = "btw-note";
 const BTW_ENTRY_TYPE = "btw-thread-entry";
@@ -114,7 +117,7 @@ const BTW_CONTINUE_THREAD_ASSISTANT_TEXT = "Understood, continuing our side conv
 
 type SessionThinkingLevel = "off" | AiThinkingLevel;
 type BtwThreadMode = "contextual" | "tangent";
-type SessionModel = NonNullable<ExtensionCommandContext["model"]>;
+type SessionModel = Model<Api>;
 /**
  * Loose model reference parsed from `/btw:model <provider> <id> <api>` and persisted to
  * session entries. Resolved to a full SessionModel via ctx.modelRegistry.find(...).
@@ -180,26 +183,6 @@ type ResolvedBtwSettings = {
   fallbackReason?: string;
 };
 
-type BtwTranscriptEntry =
-  | { id: number; turnId: number; type: "turn-boundary"; phase: "start" | "end" }
-  | { id: number; turnId: number; type: "user-message"; text: string }
-  | { id: number; turnId: number; type: "thinking"; text: string; streaming: boolean }
-  | { id: number; turnId: number; type: "assistant-text"; text: string; streaming: boolean }
-  | { id: number; turnId: number; type: "tool-call"; toolCallId: string; toolName: string; args: string }
-  | {
-      id: number;
-      turnId: number;
-      type: "tool-result";
-      toolCallId: string;
-      toolName: string;
-      content: string;
-      truncated: boolean;
-      isError: boolean;
-      streaming: boolean;
-    };
-
-type BtwTranscript = BtwTranscriptEntry[];
-
 type BtwTranscriptState = {
   entries: BtwTranscript;
   nextEntryId: number;
@@ -232,10 +215,6 @@ type OverlayRuntime = {
   closed?: boolean;
 };
 
-function isVisibleBtwMessage(message: { role: string; customType?: string }): boolean {
-  return message.role === "custom" && message.customType === BTW_MESSAGE_TYPE;
-}
-
 function isCustomEntry(entry: unknown, customType: string): entry is { type: "custom"; customType: string; data?: unknown } {
   return !!entry && typeof entry === "object" && (entry as { type?: string }).type === "custom" && (entry as { customType?: string }).customType === customType;
 }
@@ -261,7 +240,7 @@ async function createBtwResourceLoader(
   };
 }
 
-function getStringField(record: Record<string, unknown>, fieldNames: string[]): string {
+function getFirstStringField(record: Record<string, unknown>, fieldNames: string[]): string {
   for (const fieldName of fieldNames) {
     const value = record[fieldName];
     if (typeof value === "string" && value.trim()) {
@@ -278,7 +257,7 @@ function extractText(parts: AssistantMessage["content"], type: "text" | "thinkin
   for (const part of parts as unknown as Array<Record<string, unknown>>) {
     const partType = typeof part.type === "string" ? part.type : "";
     if (type === "text" && partType === "text") {
-      const text = getStringField(part, ["text"]);
+      const text = getFirstStringField(part, ["text"]);
       if (text) {
         chunks.push(text);
       }
@@ -286,7 +265,7 @@ function extractText(parts: AssistantMessage["content"], type: "text" | "thinkin
     }
 
     if (type === "thinking") {
-      const reasoning = getStringField(part, ["thinking", "reasoning", "reasoningContent", "reasoning_content", "text"]);
+      const reasoning = getFirstStringField(part, ["thinking", "reasoning", "reasoningContent", "reasoning_content", "text"]);
       if (reasoning && (partType === "thinking" || partType === "reasoning" || "reasoningContent" in part || "reasoning_content" in part)) {
         chunks.push(reasoning);
       }
@@ -310,21 +289,31 @@ function parseBtwArgs(args: string): ParsedBtwArgs {
   return { question, save };
 }
 
+function parseBtwOverrideAction(args: string):
+  | { action: "show" }
+  | { action: "clear" }
+  | { action: "set"; trimmed: string } {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    return { action: "show" };
+  }
+  if (trimmed === "clear") {
+    return { action: "clear" };
+  }
+  return { action: "set", trimmed };
+}
+
 function parseBtwModelArgs(args: string):
   | { action: "show" }
   | { action: "clear" }
   | { action: "set"; model: BtwModelRef }
   | { action: "invalid"; message: string } {
-  const trimmed = args.trim();
-  if (!trimmed) {
-    return { action: "show" };
+  const parsed = parseBtwOverrideAction(args);
+  if (parsed.action !== "set") {
+    return parsed;
   }
 
-  if (trimmed === "clear") {
-    return { action: "clear" };
-  }
-
-  const parts = trimmed.split(/\s+/);
+  const parts = parsed.trimmed.split(/\s+/);
   if (parts.length !== 3) {
     return { action: "invalid", message: "Usage: /btw:model <provider> <model> <api> | clear" };
   }
@@ -337,16 +326,12 @@ function parseBtwThinkingArgs(args: string):
   | { action: "show" }
   | { action: "clear" }
   | { action: "set"; thinkingLevel: SessionThinkingLevel } {
-  const trimmed = args.trim();
-  if (!trimmed) {
-    return { action: "show" };
+  const parsed = parseBtwOverrideAction(args);
+  if (parsed.action !== "set") {
+    return parsed;
   }
 
-  if (trimmed === "clear") {
-    return { action: "clear" };
-  }
-
-  return { action: "set", thinkingLevel: trimmed as SessionThinkingLevel };
+  return { action: "set", thinkingLevel: parsed.trimmed as SessionThinkingLevel };
 }
 
 function formatModelRef(model: Pick<SessionModel, "provider" | "id" | "api">): string {
@@ -380,8 +365,12 @@ function isSessionModel(value: unknown): value is SessionModel {
   );
 }
 
+function getMainModel(ctx: ExtensionCommandContext | ExtensionContext | null | undefined): Model<Api> | undefined {
+  return ctx?.model as Model<Api> | undefined;
+}
+
 function getRegistryModels(ctx: ExtensionCommandContext, method: "getAvailable" | "getAll"): SessionModel[] {
-  const registry = ctx.modelRegistry as unknown as Record<string, unknown>;
+  const registry = ctx.modelRegistry as unknown as Record<string, (() => unknown) | undefined>;
   const loader = registry[method];
   if (typeof loader !== "function") {
     return [];
@@ -474,25 +463,6 @@ function prepareBtwSessionModel(model: SessionModel): SessionModel {
   } as SessionModel;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function getNumericUsageField(usage: unknown, fieldNames: string[]): number | undefined {
-  if (!isRecord(usage)) {
-    return undefined;
-  }
-
-  for (const fieldName of fieldNames) {
-    const value = usage[fieldName];
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
-  }
-
-  return undefined;
-}
-
 function normalizeBtwUsage(usage: unknown): AssistantMessage["usage"] {
   const input = getNumericUsageField(usage, ["input", "inputTokens", "promptTokens", "prompt_tokens"]) ?? 0;
   const output = getNumericUsageField(usage, ["output", "outputTokens", "completionTokens", "completion_tokens"]) ?? 0;
@@ -525,24 +495,6 @@ function normalizeBtwUsage(usage: unknown): AssistantMessage["usage"] {
 function ensureBtwAssistantMessageUsage(message: AssistantMessage): AssistantMessage {
   message.usage = normalizeBtwUsage(message.usage);
   return message;
-}
-
-function formatBtwUsage(usage: unknown): string | null {
-  const input = getNumericUsageField(usage, ["input", "inputTokens", "promptTokens", "prompt_tokens"]);
-  const output = getNumericUsageField(usage, ["output", "outputTokens", "completionTokens", "completion_tokens"]);
-  const cacheRead = getNumericUsageField(usage, ["cacheRead", "cache_read", "cachedTokens", "cached_tokens"]);
-  const cacheWrite = getNumericUsageField(usage, ["cacheWrite", "cache_write"]);
-  const total =
-    getNumericUsageField(usage, ["totalTokens", "total", "total_tokens"]) ??
-    (input !== undefined || output !== undefined || cacheRead !== undefined || cacheWrite !== undefined
-      ? (input ?? 0) + (output ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
-      : undefined);
-
-  if (input === undefined && output === undefined && total === undefined) {
-    return null;
-  }
-
-  return `tokens: in ${input ?? "?"} · out ${output ?? "?"} · total ${total ?? "?"}`;
 }
 
 function createTemperatureExtension(temperature: number, model: SessionModel): Extension | undefined {
@@ -771,7 +723,7 @@ async function buildBtwSeedState(
           content: [{ type: "text", text: entry.answer }],
           provider: entry.provider,
           model: entry.model,
-          api: entry.api || sessionModel?.api || ctx.model?.api || "openai-responses",
+          api: entry.api || sessionModel?.api || getMainModel(ctx)?.api || "openai-responses",
           usage: normalizeBtwUsage(entry.usage),
           stopReason: "stop",
           timestamp: entry.timestamp,
@@ -1100,22 +1052,26 @@ function applyAssistantMessageToTranscript(
 }
 
 function applyTranscriptEvent(state: BtwTranscriptState, event: AgentSessionEvent): void {
+  type SessionMessage = Extract<AgentSessionEvent, { type: "message_start" }>["message"];
+  const handleMessage = (message: SessionMessage, streaming: boolean): void => {
+    if (message.role === "user") {
+      const turnId = ensureTranscriptTurnForUserMessage(state);
+      upsertUserMessageEntry(state, turnId, extractMessageText(message));
+      return;
+    }
+    if (message.role === "assistant") {
+      const turnId = ensureTranscriptTurn(state);
+      applyAssistantMessageToTranscript(state, turnId, message, streaming);
+    }
+  };
+
   switch (event.type) {
     case "turn_start": {
       ensureTranscriptTurn(state);
       return;
     }
     case "message_start": {
-      if (event.message.role === "user") {
-        const turnId = ensureTranscriptTurnForUserMessage(state);
-        upsertUserMessageEntry(state, turnId, extractMessageText(event.message));
-        return;
-      }
-
-      if (event.message.role === "assistant") {
-        const turnId = ensureTranscriptTurn(state);
-        applyAssistantMessageToTranscript(state, turnId, event.message, true);
-      }
+      handleMessage(event.message, true);
       return;
     }
     case "message_update": {
@@ -1128,16 +1084,7 @@ function applyTranscriptEvent(state: BtwTranscriptState, event: AgentSessionEven
       return;
     }
     case "message_end": {
-      if (event.message.role === "user") {
-        const turnId = ensureTranscriptTurnForUserMessage(state);
-        upsertUserMessageEntry(state, turnId, extractMessageText(event.message));
-        return;
-      }
-
-      if (event.message.role === "assistant") {
-        const turnId = ensureTranscriptTurn(state);
-        applyAssistantMessageToTranscript(state, turnId, event.message, false);
-      }
+      handleMessage(event.message, false);
       return;
     }
     case "tool_execution_start": {
@@ -1200,18 +1147,6 @@ function setTranscriptFailure(state: BtwTranscriptState, message: string, icons:
   finishTranscriptTurn(state, turnId);
 }
 
-function hasStreamingTranscriptEntry(entries: BtwTranscript): boolean {
-  return entries.some(
-    (entry) =>
-      (entry.type === "thinking" || entry.type === "assistant-text" || entry.type === "tool-result") &&
-      entry.streaming,
-  );
-}
-
-function getCompletedExchangeCount(entries: BtwTranscript): number {
-  return entries.filter((entry) => entry.type === "assistant-text" && !entry.streaming).length;
-}
-
 function stripAnsiSequences(value: string): string {
   return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 }
@@ -1255,45 +1190,51 @@ export function buildOverlayTranscript(
     }
   };
 
-  const pushInlineBlock = (
-    header: string,
-    text: string,
-    options: { blankBefore?: boolean; style?: (value: string) => string } = {},
-  ) => {
-    const bodyLines = text.split("\n");
-    const style = options.style ?? ((value: string) => value);
-    if (options.blankBefore !== false) {
+  type BtwBlockRenderOptions = { blankBefore?: boolean; indent?: string; style?: (value: string) => string };
+  const resolveBlockStyle = (opts: { style?: (value: string) => string }): ((value: string) => string) =>
+    opts.style ?? ((value: string) => value);
+  const maybeBlankLine = (blankBefore?: boolean): void => {
+    if (blankBefore !== false) {
       pushBlankLine();
-    }
-
-    const firstLine = bodyLines.shift() ?? "";
-    lines.push(`${header}${firstLine ? ` ${style(firstLine)}` : ""}`);
-    for (const line of bodyLines) {
-      lines.push(`${blockIndent}${style(line)}`);
     }
   };
-
-  const pushStackedLines = (
-    header: string,
-    bodyLines: string[],
-    options: { blankBefore?: boolean; indent?: string; style?: (value: string) => string } = {},
-  ) => {
-    const indent = options.indent ?? blockIndent;
-    const style = options.style ?? ((value: string) => value);
-    if (options.blankBefore !== false) {
-      pushBlankLine();
-    }
-
-    lines.push(header);
+  const pushStyledLines = (bodyLines: string[], indent: string, style: (value: string) => string): void => {
     for (const line of bodyLines) {
       lines.push(`${indent}${style(line)}`);
     }
   };
 
+  const pushInlineBlock = (
+    header: string,
+    text: string,
+    options: BtwBlockRenderOptions = {},
+  ) => {
+    const bodyLines = text.split("\n");
+    const style = resolveBlockStyle(options);
+    maybeBlankLine(options.blankBefore);
+
+    const firstLine = bodyLines.shift() ?? "";
+    lines.push(`${header}${firstLine ? ` ${style(firstLine)}` : ""}`);
+    pushStyledLines(bodyLines, blockIndent, style);
+  };
+
+  const pushStackedLines = (
+    header: string,
+    bodyLines: string[],
+    options: BtwBlockRenderOptions = {},
+  ) => {
+    const indent = options.indent ?? blockIndent;
+    const style = resolveBlockStyle(options);
+    maybeBlankLine(options.blankBefore);
+
+    lines.push(header);
+    pushStyledLines(bodyLines, indent, style);
+  };
+
   const pushStackedBlock = (
     header: string,
     text: string,
-    options: { blankBefore?: boolean; indent?: string; style?: (value: string) => string } = {},
+    options: BtwBlockRenderOptions = {},
   ) => {
     pushStackedLines(header, text.split("\n"), options);
   };
@@ -1492,25 +1433,13 @@ function buildTranscriptBadge(
   return theme.bg(background, theme.fg(foreground, theme.bold(` ${label} `)));
 }
 
-class BtwMessageComponent implements Component {
-  readonly children: Array<{ text: string }>;
-
-  constructor(text: string, private readonly theme: ExtensionContext["ui"]["theme"]) {
-    this.children = [{ text }];
-  }
-
-  render(): string[] {
-    return this.children[0]?.text.split(/\r?\n/).map((line) => this.theme.bg("customMessageBg", line)) ?? [];
-  }
-
-  invalidate(): void {}
+function buildBtwInjectContent(instructions: string, formattedThread: string): string {
+  return instructions
+    ? `Here is a side conversation I had. ${instructions}\n\n${formattedThread}`
+    : `Here is a side conversation I had for additional context:\n\n${formattedThread}`;
 }
 
-function createBtwMessageComponent(lines: string[], theme: ExtensionContext["ui"]["theme"]): Component {
-  return new BtwMessageComponent(lines.join("\n"), theme);
-}
-
-export default function (pi: ExtensionAPI) {
+export default function btwRuntimeCore(pi: ExtensionAPI) {
   let debugLogger: import("./debug-logger").BtwDebugLogger | null = null;
   function getBtwIcons(): BtwIconSet {
     return resolveBtwIcons().icons;
@@ -1570,7 +1499,7 @@ export default function (pi: ExtensionAPI) {
     const activeModel = activeBtwSession
       ? { label: activeBtwSession.modelKey, source: activeBtwSession.modelSource }
       : null;
-    const model = btwModelOverride ?? ctx?.model ?? null;
+    const model = btwModelOverride ?? getMainModel(ctx) ?? null;
     const agentModelLabel = agent?.model ? `${agent.model} (configured)` : null;
     let modelLabel = activeModel?.label ?? (btwModelOverride && model ? formatModelRef(model) : agentModelLabel ?? (model ? formatModelRef(model) : "none"));
     // Strip redundant API source labels and source parentheticals from modal metadata.
@@ -1663,8 +1592,10 @@ export default function (pi: ExtensionAPI) {
 
     try {
       unsubscribe();
-    } catch {
-      // Ignore unsubscribe errors during BTW session replacement/shutdown.
+    } catch (error) {
+      void logDebugEvent("btw_unsubscribe_error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -1685,7 +1616,7 @@ export default function (pi: ExtensionAPI) {
 
     applyTranscriptEvent(transcriptState, event);
 
-    if (event.type === "message_update" && (event as any).assistantMessageEvent?.type === "thinking_delta") {
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "thinking_delta") {
       setOverlayStatus(formatThinkingStatus(), ctx);
     }
 
@@ -1742,8 +1673,10 @@ export default function (pi: ExtensionAPI) {
 
     try {
       await current.session.abort();
-    } catch {
-      // Ignore abort errors during BTW session replacement/shutdown.
+    } catch (error) {
+      await logDebugEvent("btw_abort_error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     current.session.dispose();
@@ -1759,6 +1692,7 @@ export default function (pi: ExtensionAPI) {
     notifyOnFallback = false,
     agent?: BtwAgentDefinition | null,
   ): Promise<ResolvedBtwModel> {
+    const mainModel = getMainModel(ctx);
     if (btwModelOverride) {
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(btwModelOverride);
       if (auth.ok && auth.apiKey) {
@@ -1769,18 +1703,18 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      const fallbackReason = ctx.model
+      const fallbackReason = mainModel
         ? `Configured BTW model ${formatModelRef(btwModelOverride)} has no credentials. Falling back to main model ${formatModelRef(
-            ctx.model,
+            mainModel,
           )}.`
         : `Configured BTW model ${formatModelRef(btwModelOverride)} has no credentials, and no main model is active.`;
       if (notifyOnFallback) {
         notify(ctx, fallbackReason, "warning");
       }
 
-      if (ctx.model) {
+      if (mainModel) {
         return {
-          model: ctx.model,
+          model: mainModel,
           source: "main",
           configuredOverride: btwModelOverride,
           fallbackReason,
@@ -1797,6 +1731,18 @@ export default function (pi: ExtensionAPI) {
 
     if (agent?.model) {
       const agentModelReference = agent.model;
+      const reportAgentModelFallback = (fallbackReason: string): ResolvedBtwModel => {
+        if (notifyOnFallback) {
+          notify(ctx, fallbackReason, "warning");
+        }
+        return {
+          model: mainModel ?? null,
+          source: mainModel ? "main" : "none",
+          configuredOverride: null,
+          agentModelReference,
+          fallbackReason,
+        };
+      };
       const resolvedAgentModel = resolveModelReference(ctx, agentModelReference);
       if (resolvedAgentModel.model) {
         const auth = await ctx.modelRegistry.getApiKeyAndHeaders(resolvedAgentModel.model);
@@ -1809,41 +1755,21 @@ export default function (pi: ExtensionAPI) {
           };
         }
 
-        const fallbackReason = ctx.model
-          ? `Agent '${agent.name}' model ${agentModelReference} has no credentials. Falling back to main model ${formatModelRef(ctx.model)}.`
+        const fallbackReason = mainModel
+          ? `Agent '${agent.name}' model ${agentModelReference} has no credentials. Falling back to main model ${formatModelRef(mainModel)}.`
           : `Agent '${agent.name}' model ${agentModelReference} has no credentials, and no main model is active.`;
-        if (notifyOnFallback) {
-          notify(ctx, fallbackReason, "warning");
-        }
-
-        return {
-          model: ctx.model ?? null,
-          source: ctx.model ? "main" : "none",
-          configuredOverride: null,
-          agentModelReference,
-          fallbackReason,
-        };
+        return reportAgentModelFallback(fallbackReason);
       }
 
-      const fallbackReason = ctx.model
-        ? `Agent '${agent.name}' model ${agentModelReference} was not found. Falling back to main model ${formatModelRef(ctx.model)}.`
+      const fallbackReason = mainModel
+        ? `Agent '${agent.name}' model ${agentModelReference} was not found. Falling back to main model ${formatModelRef(mainModel)}.`
         : `Agent '${agent.name}' model ${agentModelReference} was not found, and no main model is active.`;
-      if (notifyOnFallback) {
-        notify(ctx, fallbackReason, "warning");
-      }
-
-      return {
-        model: ctx.model ?? null,
-        source: ctx.model ? "main" : "none",
-        configuredOverride: null,
-        agentModelReference,
-        fallbackReason,
-      };
+      return reportAgentModelFallback(fallbackReason);
     }
 
-    if (ctx.model) {
+    if (mainModel) {
       return {
-        model: ctx.model,
+        model: mainModel,
         source: "main",
         configuredOverride: null,
       };
@@ -2252,15 +2178,24 @@ export default function (pi: ExtensionAPI) {
     const trimmedArgs = args.trim();
     await logDebugEvent("command", { name, hasArgs: trimmedArgs.length > 0 }, ctx);
 
+    const openBtwOverlay = async (mode: BtwThreadMode): Promise<true> => {
+      const sessionRuntime = await ensureBtwSession(ctx, mode);
+      if (sessionRuntime && overlayStatus?.startsWith("BTW agent set to ")) {
+        setOverlayStatus(null, ctx);
+      }
+      await ensureOverlay(ctx);
+      return true;
+    };
+    const reportBtwAgentList = async (agents: readonly BtwAgentDefinition[]): Promise<true> => {
+      const { buildBtwAgentListSummary } = await import("./agent-selection-ui.js");
+      notify(ctx, buildBtwAgentListSummary(agents, selectedBtwAgentName), "info");
+      return true;
+    };
+
     if (name === "btw") {
       const { question, save } = parseBtwArgs(trimmedArgs);
       if (!question) {
-        const sessionRuntime = await ensureBtwSession(ctx, pendingMode);
-        if (sessionRuntime && overlayStatus?.startsWith("BTW agent set to ")) {
-          setOverlayStatus(null, ctx);
-        }
-        await ensureOverlay(ctx);
-        return true;
+        return openBtwOverlay(pendingMode);
       }
 
       if (pendingMode !== "contextual") {
@@ -2278,12 +2213,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (!question) {
-        const sessionRuntime = await ensureBtwSession(ctx, "tangent");
-        if (sessionRuntime && overlayStatus?.startsWith("BTW agent set to ")) {
-          setOverlayStatus(null, ctx);
-        }
-        await ensureOverlay(ctx);
-        return true;
+        return openBtwOverlay("tangent");
       }
 
       await runBtw(ctx, question, save, "tangent");
@@ -2315,9 +2245,7 @@ export default function (pi: ExtensionAPI) {
       const { discoverBtwAgents } = await import("./agent-discovery.js");
       const agents = await discoverBtwAgents();
       if (!trimmedArgs && !ctx.hasUI) {
-        const { buildBtwAgentListSummary } = await import("./agent-selection-ui.js");
-        notify(ctx, buildBtwAgentListSummary(agents, selectedBtwAgentName), "info");
-        return true;
+        return reportBtwAgentList(agents);
       }
 
       if (!trimmedArgs && ctx.hasUI) {
@@ -2326,9 +2254,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (trimmedArgs === "list") {
-        const { buildBtwAgentListSummary } = await import("./agent-selection-ui.js");
-        notify(ctx, buildBtwAgentListSummary(agents, selectedBtwAgentName), "info");
-        return true;
+        return reportBtwAgentList(agents);
       }
 
       const selectedAgent = agents.find((agent) => agent.name === trimmedArgs);
@@ -2411,14 +2337,8 @@ export default function (pi: ExtensionAPI) {
           return true;
         }
         const selected = [exchanges[selectedIndex]];
-        const content = trimmedArgs
-          ? `Here is a side conversation I had. ${trimmedArgs}\n\n${formatThread(selected)}`
-          : `Here is a side conversation I had for additional context:\n\n${formatThread(selected)}`;
-        sendThreadToMain(ctx, content);
-        const count = selected.length;
-        await resetThread(ctx);
-        dismissOverlay();
-        notify(ctx, `Injected selected BTW thread (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+        const content = buildBtwInjectContent(trimmedArgs, formatThread(selected));
+        await deliverBtwThread(ctx, content, selected.length, "Injected selected BTW thread");
         return true;
       }
 
@@ -2440,15 +2360,8 @@ export default function (pi: ExtensionAPI) {
       try {
         const { thread } = await getBtwHandoffThread(ctx);
         const instructions = trimmedArgs;
-        const content = instructions
-          ? `Here is a side conversation I had. ${instructions}\n\n${formatThread(thread)}`
-          : `Here is a side conversation I had for additional context:\n\n${formatThread(thread)}`;
-
-        sendThreadToMain(ctx, content);
-        const count = thread.length;
-        await resetThread(ctx);
-        dismissOverlay();
-        notify(ctx, `Injected BTW thread (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+        const content = buildBtwInjectContent(instructions, formatThread(thread));
+        await deliverBtwThread(ctx, content, thread.length, "Injected BTW thread");
       } catch (error) {
         setOverlayStatus("Inject failed. Thread preserved for retry or summarize.", ctx);
         notify(ctx, error instanceof Error ? error.message : String(error), "error");
@@ -2473,11 +2386,7 @@ export default function (pi: ExtensionAPI) {
           ? `Here is a summary of a side conversation I had. ${instructions}\n\n${summary}`
           : `Here is a summary of a side conversation I had:\n\n${summary}`;
 
-        sendThreadToMain(ctx, content);
-        const count = thread.length;
-        await resetThread(ctx);
-        dismissOverlay();
-        notify(ctx, `Injected BTW summary (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+        await deliverBtwThread(ctx, content, thread.length, "Injected BTW summary");
       } catch (error) {
         setOverlayStatus("Summarize failed. Thread preserved for retry or injection.", ctx);
         notify(ctx, error instanceof Error ? error.message : String(error), "error");
@@ -2621,7 +2530,7 @@ export default function (pi: ExtensionAPI) {
 
       const normalizedDetails: BtwDetails = {
         ...details,
-        api: details.api || ctx.model?.api || "openai-responses",
+        api: details.api || getMainModel(ctx)?.api || "openai-responses",
       };
 
       pendingThread.push(normalizedDetails);
@@ -2760,15 +2669,8 @@ export default function (pi: ExtensionAPI) {
     setOverlayStatus(formatPendingStatus("injecting selected turns into the main session..."), ctx);
     await ensureOverlay(ctx);
 
-    const content = instructions
-      ? `Here is a side conversation I had. ${instructions}\n\n${formatThread(selected)}`
-      : `Here is a side conversation I had for additional context:\n\n${formatThread(selected)}`;
-
-    sendThreadToMain(ctx, content);
-    const count = selected.length;
-    await resetThread(ctx);
-    dismissOverlay();
-    notify(ctx, `Injected selected BTW thread (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+    const content = buildBtwInjectContent(instructions, formatThread(selected));
+    await deliverBtwThread(ctx, content, selected.length, "Injected selected BTW thread");
   }
 
   async function getBtwHandoffThread(
@@ -2835,8 +2737,10 @@ export default function (pi: ExtensionAPI) {
     } finally {
       try {
         await session.abort();
-      } catch {
-        // Ignore abort errors during summarize session shutdown.
+      } catch (error) {
+        await logDebugEvent("btw_summarize_abort_error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
       session.dispose();
     }
@@ -2850,33 +2754,17 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  pi.registerMessageRenderer(BTW_MESSAGE_TYPE, (message, { expanded }, theme) => {
-    const details = message.details as BtwDetails | undefined;
-    const content = typeof message.content === "string" ? message.content : "[non-text btw message]";
-    const lines = [theme.fg("accent", theme.bold("[BTW]")), content];
-
-    if (expanded && details) {
-      lines.push(
-        theme.fg(
-          "dim",
-          `model: ${details.provider}/${details.model} (${details.api ?? "openai-responses"}) · thinking: ${details.thinkingLevel}`,
-        ),
-      );
-
-      const usageText = formatBtwUsage(details.usage);
-      if (usageText) {
-        lines.push(theme.fg("dim", usageText));
-      }
-    }
-
-    return createBtwMessageComponent(lines, theme);
-  });
-
-  pi.on("context", async (event) => {
-    return {
-      messages: event.messages.filter((message) => !isVisibleBtwMessage(message)),
-    };
-  });
+  async function deliverBtwThread(
+    ctx: ExtensionCommandContext,
+    content: string,
+    count: number,
+    label: string,
+  ): Promise<void> {
+    sendThreadToMain(ctx, content);
+    await resetThread(ctx);
+    dismissOverlay();
+    notify(ctx, `${label} (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     await restoreThread(ctx);

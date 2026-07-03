@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Editor,
@@ -14,31 +14,18 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import type { BtwConfig, BtwModalSize } from "./config";
+import type { BtwTranscript, BtwTranscriptEntry } from "./btw-types";
 
 const BTW_FOCUS_SHORTCUTS = ["alt+/", "ctrl+alt+w"] as const;
 
 type BtwThreadMode = "contextual" | "tangent";
-
-type BtwTranscriptEntry =
-  | { id: number; turnId: number; type: "turn-boundary"; phase: "start" | "end" }
-  | { id: number; turnId: number; type: "user-message"; text: string }
-  | { id: number; turnId: number; type: "thinking"; text: string; streaming: boolean }
-  | { id: number; turnId: number; type: "assistant-text"; text: string; streaming: boolean }
-  | { id: number; turnId: number; type: "tool-call"; toolCallId: string; toolName: string; args: string }
-  | {
-      id: number;
-      turnId: number;
-      type: "tool-result";
-      toolCallId: string;
-      toolName: string;
-      content: string;
-      truncated: boolean;
-      isError: boolean;
-      streaming: boolean;
-    };
-
-type BtwTranscript = BtwTranscriptEntry[];
 type BtwTheme = ExtensionContext["ui"]["theme"];
+
+type BtwEditorShim = Editor & {
+  setValue: (value: string) => void;
+  getValue: () => string;
+  onEscape?: () => void;
+};
 
 type BtwOverlayDimensions = {
   maxHeight: number;
@@ -166,9 +153,10 @@ export class BtwOverlayComponent extends Container implements Focusable {
     };
 
     // Shim Input-like API for backward compatibility
-    (this.input as any).setValue = (value: string) => this.input.setText(value);
-    (this.input as any).getValue = () => this.input.getText();
-    (this.input as any).onEscape = () => {
+    const shimmedInput = this.input as BtwEditorShim;
+    shimmedInput.setValue = (value: string) => this.input.setText(value);
+    shimmedInput.getValue = () => this.input.getText();
+    shimmedInput.onEscape = () => {
       this.onDismissCallback();
     };
 
@@ -178,7 +166,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
     this.tui.terminal?.write?.("\x1b[?1000h\x1b[?1006h");
 
     const originalHandleInput = this.input.handleInput.bind(this.input);
-    (this.input as any).handleInput = (data: string) => {
+    shimmedInput.handleInput = (data: string) => {
       if (options.keybindings.matches(data, "app.clear")) {
         if (this.input.getText().length > 0) {
           this.input.setText("");
@@ -246,7 +234,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
       const colorName = match[1];
       const content = match[2];
       try {
-        segments.push(this.theme.fg(colorName as any, content));
+        segments.push(this.theme.fg(colorName as ThemeColor, content));
       } catch {
         segments.push(this.dimNonAnsiParts(content));
       }
