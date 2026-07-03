@@ -1,13 +1,19 @@
+<div align="center">
+
 # pi-btw-sidecar
 
-[![npm version](https://img.shields.io/npm/v/pi-btw-sidecar?style=flat-square)](https://www.npmjs.com/package/pi-btw-sidecar) [![License](https://img.shields.io/github/license/MasuRii/pi-btw-sidecar?style=flat-square)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/pi-btw-sidecar?style=for-the-badge)](https://www.npmjs.com/package/pi-btw-sidecar)
+[![License](https://img.shields.io/github/license/MasuRii/pi-btw-sidecar?style=for-the-badge)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y01PSSVR)
 
 Persistent `/btw` side conversations for the [Pi coding agent](https://github.com/mariozechner/pi).
-
 `pi-btw-sidecar` opens a focused, non-capturing modal sidecar session, keeps BTW discussion separate from the main transcript, and can inject or summarize the side conversation back into the main session on request.
-
 - **npm**: https://www.npmjs.com/package/pi-btw-sidecar
 - **GitHub**: https://github.com/MasuRii/pi-btw-sidecar
+
+</div>
 
 ## Features
 
@@ -157,6 +163,13 @@ Do not publish, push, or tag until the GitHub repository has been manually revie
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+## Related Pi Extensions
+
+- [pi-context-injector](https://github.com/MasuRii/pi-context-injector) — Compact project context injection and continuity context
+- [pi-agent-router](https://github.com/MasuRii/pi-agent-router) — Active-agent routing and controlled subagent delegation
+- [pi-hide-messages](https://github.com/MasuRii/pi-hide-messages) — Hide older chat messages without losing context
+- [pi-session-cleanup](https://github.com/MasuRii/pi-session-cleanup) — Interactive session cleanup for the Pi TUI
 
 ## License
 
