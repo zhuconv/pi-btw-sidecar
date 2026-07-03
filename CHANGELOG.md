@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-03
+
+### Added
+- Added an `enabled` master config toggle to disable the extension without uninstalling. ([bf0fb4a](https://github.com/MasuRii/pi-btw-sidecar/commit/bf0fb4ab10bb6b9028250c090d78c903d9d1b192))
+
+### Changed
+- Widened Pi peer dependency ranges to 0.80 and added security dependency overrides. ([79fb903](https://github.com/MasuRii/pi-btw-sidecar/commit/79fb90382051c48827407c2b7b6a1332e1405e06))
+- Extracted shared types and deduplicated utilities across the BTW runtime modules. ([bf0fb4a](https://github.com/MasuRii/pi-btw-sidecar/commit/bf0fb4ab10bb6b9028250c090d78c903d9d1b192))
+
 ## [0.2.1] - 2026-06-16
 
 ### Added
