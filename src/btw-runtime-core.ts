@@ -7,6 +7,13 @@ import type {
   Extension,
   ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
+import {
+  buildSessionContext,
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { type Api, type AssistantMessage, type Message, type Model, type ThinkingLevel as AiThinkingLevel, type UserMessage } from "@earendil-works/pi-ai";
 import type { OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import type { BtwAgentDefinition } from "./agent-discovery";
@@ -211,6 +218,10 @@ type BtwSessionRuntime = {
   sideThreadStartIndex: number;
 };
 
+type ToolControllableSession = {
+  setActiveToolsByName?: (toolNames: string[]) => void | Promise<void>;
+};
+
 type OverlayRuntime = {
   handle?: OverlayHandle;
   refresh?: () => void;
@@ -226,25 +237,38 @@ function isCustomEntry(entry: unknown, customType: string): entry is { type: "cu
   return !!entry && typeof entry === "object" && (entry as { type?: string }).type === "custom" && (entry as { customType?: string }).customType === customType;
 }
 
+async function disableSessionTools(session: AgentSession): Promise<void> {
+  const setActiveToolsByName = (session as unknown as ToolControllableSession).setActiveToolsByName;
+  if (typeof setActiveToolsByName === "function") {
+    await setActiveToolsByName.call(session, []);
+  }
+}
+
 async function createBtwResourceLoader(
-  _ctx: ExtensionCommandContext,
+  ctx: ExtensionCommandContext,
   appendSystemPrompt: string[] = [],
   extensions: Extension[] = [],
 ): Promise<ResourceLoader> {
-  const { createExtensionRuntime } = await import("@earendil-works/pi-coding-agent");
-  const extensionsResult = { extensions, errors: [], runtime: createExtensionRuntime() };
-
-  return {
-    getExtensions: () => extensionsResult,
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => BTW_CHAT_ONLY_SYSTEM_PROMPT,
-    getAppendSystemPrompt: () => appendSystemPrompt,
-    extendResources: () => {},
-    reload: async () => {},
-  };
+  // Use the host SDK's loader instead of constructing its private extension
+  // runtime shape. Pi and OMP both expose this compatibility surface, while
+  // their internal ExtensionRuntime implementations have diverged.
+  const loader = new DefaultResourceLoader({
+    cwd: ctx.cwd || process.cwd(),
+    agentDir: getAgentDir(),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPrompt: BTW_CHAT_ONLY_SYSTEM_PROMPT,
+    appendSystemPrompt,
+    extensionsOverride: (base) => ({
+      ...base,
+      extensions: [...base.extensions, ...extensions],
+    }),
+  });
+  await loader.reload();
+  return loader;
 }
 
 function getFirstStringField(record: Record<string, unknown>, fieldNames: string[]): string {
@@ -693,7 +717,6 @@ async function buildBtwSeedState(
   mode: BtwThreadMode,
   sessionModel: SessionModel | null,
 ): Promise<{ messages: Message[]; sideThreadStartIndex: number }> {
-  const { buildSessionContext } = await import("@earendil-works/pi-coding-agent");
   const messages: Message[] = [];
 
   if (mode === "contextual") {
@@ -2008,7 +2031,6 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
       throw new Error(settings.fallbackReason || "No active model selected.");
     }
 
-    const { createAgentSession, SessionManager } = await import("@earendil-works/pi-coding-agent");
     const { messages: seedMessages, sideThreadStartIndex } = await buildBtwSeedState(ctx, pendingThread, mode, settings.model);
     const resourceLoader = await createBtwResourceLoader(ctx, [sanitizeBtwAgentSystemPrompt(agent.systemPrompt)], createBtwSessionExtensions(settings));
 
@@ -2022,6 +2044,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
       tools: [],
       resourceLoader,
     });
+    await disableSessionTools(session);
 
     if (seedMessages.length > 0) {
       session.agent.state.messages = seedMessages as typeof session.state.messages;
@@ -2729,7 +2752,6 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
       throw new Error(auth.ok ? `No credentials available for ${model.provider}/${model.id}.` : auth.error);
     }
 
-    const { createAgentSession, SessionManager } = await import("@earendil-works/pi-coding-agent");
     const { session } = await createAgentSession({
       sessionManager: SessionManager.inMemory(),
       model,
@@ -2743,6 +2765,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
         createBtwSessionExtensions(settings),
       ),
     });
+    await disableSessionTools(session);
 
     try {
       await session.prompt(formatThread(thread), { source: "extension" });

@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Register a single `/aside` root command with space-delimited subcommands to avoid collisions with OMP's built-in `/btw` command.
 - Adapt OMP's `getApiKey(model)` registry to the older Pi `getApiKeyAndHeaders(model)` AgentSession contract while retaining compatibility with upstream Pi registries.
 
+### Fixed
+
+- Avoid OMP compiled-binary failures on lazily imported Pi SDK modules (`omp-legacy-pi-bundled:`) and use the host's compatible resource-loader runtime for isolated side sessions.
+- Explicitly clear side-session tools on hosts such as OMP that ignore Pi's legacy `noTools` option.
+
 ## [0.3.0] - 2026-07-03
 
 ### Added
