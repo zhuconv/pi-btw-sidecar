@@ -7,6 +7,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { BtwOverlayComponent } from "../src/btw-overlay";
 import btwExtension from "../src/btw-runtime";
 import { buildOverlayTranscript, resolveBtwModalDimensions } from "../src/btw-runtime-core";
+import { parseAsideCommandArgs, parseAsideSlashCommand } from "../src/aside-command";
 import { resolveBtwIconsForContext } from "../src/icons";
 import {
   discoverBtwAgents,
@@ -584,7 +585,7 @@ function createHarness(
   let mainThinkingLevel: string = "off";
   let activeTools: string[] = [];
   let credentialResolver: ((model: { provider: string; id: string; api: string }) => string | undefined) | null = null;
-  // Models that ctx.modelRegistry.find(provider, id) should return for /btw:model resolution.
+  // Models that ctx.modelRegistry.find(provider, id) should return for /aside model resolution.
   // Tests that exercise overrides should call harness.registerModel(...) so the resolved
   // Model.api preserves the value the test cares about (otherwise we synthesize a default).
   const registeredModels = new Map<string, any>();
@@ -725,9 +726,12 @@ function createHarness(
   }
 
   async function command(name: string, args = "") {
-    const cmd = commands.get(name);
-    if (!cmd) throw new Error(`Missing command: ${name}`);
-    await cmd.handler(args, baseCtx as unknown as ExtensionCommandContext);
+    // Route the core command names used by older scenario cases through the single public /aside command.
+    const publicName = name === "btw" || name.startsWith("btw:") ? "aside" : name;
+    const publicArgs = name.startsWith("btw:") ? `${name.slice("btw:".length)} ${args}`.trim() : args;
+    const cmd = commands.get(publicName);
+    if (!cmd) throw new Error(`Missing command: ${publicName}`);
+    await cmd.handler(publicArgs, baseCtx as unknown as ExtensionCommandContext);
   }
 
   async function shortcut(name: string) {
@@ -771,6 +775,7 @@ function createHarness(
 
   return {
     api,
+    commands,
     entries,
     notifications,
     widgets,
@@ -848,6 +853,33 @@ function skipsTemperatureExtension(model: { api: string; id: string; reasoning?:
   return Boolean(model.reasoning) || /^o\d(?:$|[-.])/.test(id) || /^gpt-5(?:$|[-.])/.test(id) || /(?:^|[-.])codex(?:$|[-.])/.test(id);
 }
 
+describe("aside command parsing", () => {
+  it("routes prompts and space-delimited subcommands to the BTW runtime", () => {
+    expect(parseAsideCommandArgs("")).toEqual({ name: "btw", args: "" });
+    expect(parseAsideCommandArgs("what is this code doing?")).toEqual({
+      name: "btw",
+      args: "what is this code doing?",
+    });
+    expect(parseAsideCommandArgs("new what is your name")).toEqual({
+      name: "btw:new",
+      args: "what is your name",
+    });
+    expect(parseAsideCommandArgs("inject-select keep this turn")).toEqual({
+      name: "btw:inject-select",
+      args: "keep this turn",
+    });
+  });
+
+  it("recognizes /aside inside the modal without treating colon namespaces as commands", () => {
+    expect(parseAsideSlashCommand("/aside tangent side quest")).toEqual({
+      name: "btw:tangent",
+      args: "side quest",
+    });
+    expect(parseAsideSlashCommand("/aside:new side quest")).toBeNull();
+    expect(parseAsideSlashCommand("/plan side quest")).toBeNull();
+  });
+});
+
 describe("btw agent discovery and selection UI", () => {
   it("parses agent frontmatter and keeps the full markdown body as instructions", () => {
     const parsed = parseBtwAgentMarkdown(
@@ -896,6 +928,15 @@ describe("btw runtime behavior", () => {
     promptStreamMock.mockImplementation((_record: unknown, _text: string, context: StreamContext) => {
       return streamAnswer(`default:${(context.messages.at(-1)?.content[0] as any)?.text ?? ""}`);
     });
+  });
+
+  it("registers only the /aside root command and routes space-delimited subcommands", async () => {
+    const harness = createHarness();
+
+    expect(Array.from(harness.commands.keys())).toEqual(["aside"]);
+    await harness.command("aside", "clear");
+
+    expect(harness.notifications.at(-1)).toEqual({ message: "Cleared BTW thread.", type: "info" });
   });
 
   it("renders expanded BTW notes when usage lacks totalTokens", () => {
@@ -1062,7 +1103,7 @@ describe("btw runtime behavior", () => {
     expect(harness.notifications.at(-1)?.message).toContain("Unknown BTW agent: does-not-exist");
   });
 
-  it("changes the selected BTW agent with /btw:agent and recreates the sub-session", async () => {
+  it("changes the selected BTW agent with /aside agent and recreates the sub-session", async () => {
     const harness = createHarness();
 
     await harness.runSessionStart();
@@ -2220,7 +2261,7 @@ describe("btw runtime behavior", () => {
     expect(inputLine).not.toContain("\x1b_pi:c\x07");
   });
 
-  it("/btw:new appends a reset marker, disposes the old sub-session, clears prior hidden thread state, stays contextual, and reopens a fresh thread", async () => {
+  it("/aside new appends a reset marker, disposes the old sub-session, clears prior hidden thread state, stays contextual, and reopens a fresh thread", async () => {
     const harness = createHarness();
     promptStreamMock
       .mockImplementationOnce((_record: unknown, _text: string, context: StreamContext) => {
@@ -2268,7 +2309,7 @@ describe("btw runtime behavior", () => {
     expect(overlay.statusText.text).toContain("Started a fresh BTW thread.");
   });
 
-  it("switching between /btw:tangent and /btw appends reset markers and tangent requests omit inherited main-session conversation", async () => {
+  it("switching between /aside tangent and /aside appends reset markers and tangent requests omit inherited main-session conversation", async () => {
     const mainVisibleNote = {
       type: "custom",
       role: "custom",
@@ -2314,7 +2355,7 @@ describe("btw runtime behavior", () => {
     expect(transcript).not.toContain("default:tangent start");
   });
 
-  it("/btw:clear dismisses the overlay, disposes the active sub-session, appends a reset marker, and restore only rehydrates entries after the last reset", async () => {
+  it("/aside clear dismisses the overlay, disposes the active sub-session, appends a reset marker, and restore only rehydrates entries after the last reset", async () => {
     const seedEntries: SessionEntry[] = [
       { type: "custom", customType: "btw-thread-entry", data: { question: "old q", thinking: "", answer: "old a", provider: "p", model: "m", thinkingLevel: "off", timestamp: 1 } },
       { type: "custom", customType: "btw-thread-reset", data: { timestamp: 2, mode: "tangent" } },
@@ -2364,7 +2405,7 @@ describe("btw runtime behavior", () => {
     expect(transcript).not.toContain("You  new q");
   });
 
-  it("/btw:clear during active tool execution aborts the prompt, disposes the sub-session, and leaves no partial thread", async () => {
+  it("/aside clear during active tool execution aborts the prompt, disposes the sub-session, and leaves no partial thread", async () => {
     const harness = createHarness();
     const blocking = createBlockingToolStream();
     promptStreamMock.mockImplementation(() => blocking.stream());
@@ -2418,7 +2459,7 @@ describe("btw runtime behavior", () => {
     }
   });
 
-  it("/btw:inject success extracts the active sub-session thread, disposes it, dismisses the overlay, and reopens fresh", async () => {
+  it("/aside inject success extracts the active sub-session thread, disposes it, dismisses the overlay, and reopens fresh", async () => {
     const harness = createHarness();
     promptStreamMock.mockImplementation(() => streamAnswer("First answer"));
 
@@ -2460,7 +2501,7 @@ describe("btw runtime behavior", () => {
     expect(transcriptText(reopened)).toContain("No BTW thread yet. Ask a side question to start one.");
   });
 
-  it("/btw:inject while the main session is busy delivers to the main session as a follow-up", async () => {
+  it("/aside inject while the main session is busy delivers to the main session as a follow-up", async () => {
     const harness = createHarness();
     promptStreamMock.mockImplementation(() => streamAnswer("Busy answer"));
 
@@ -2477,7 +2518,7 @@ describe("btw runtime behavior", () => {
     });
   });
 
-  it("/btw:inject with an empty sub-session warns without disposing the ready BTW session", async () => {
+  it("/aside inject with an empty sub-session warns without disposing the ready BTW session", async () => {
     const harness = createHarness();
 
     await harness.runSessionStart();
@@ -2565,7 +2606,7 @@ describe("btw runtime behavior", () => {
     });
   });
 
-  it("/btw:summarize success summarizes the active sub-session thread, disposes it, dismisses the overlay, and reopens fresh", async () => {
+  it("/aside summarize success summarizes the active sub-session thread, disposes it, dismisses the overlay, and reopens fresh", async () => {
     const harness = createHarness();
     promptStreamMock
       .mockImplementationOnce(() => streamAnswer("First answer"))
@@ -2658,7 +2699,7 @@ describe("btw runtime behavior", () => {
     });
   });
 
-  it("in-modal /btw:new reuses command semantics by resetting the thread and reopening contextual mode", async () => {
+  it("in-modal /aside new reuses command semantics by resetting the thread and reopening contextual mode", async () => {
     const harness = createHarness();
     promptStreamMock
       .mockImplementationOnce(() => streamAnswer("First answer"))
@@ -2668,7 +2709,7 @@ describe("btw runtime behavior", () => {
     await harness.command("btw", "first question");
 
     const overlay = harness.latestOverlayComponent();
-    overlay.input.onSubmit?.("/btw:new replacement question");
+    overlay.input.onSubmit?.("/aside new replacement question");
     await flushAsyncWork();
 
     const resets = getCustomEntries(harness.entries, "btw-thread-reset");
@@ -2683,7 +2724,7 @@ describe("btw runtime behavior", () => {
     expect(overlay['modeText'].text).toContain("BTW");
   });
 
-  it("in-modal /btw:tangent reuses command semantics by switching modes and dropping inherited main-session context", async () => {
+  it("in-modal /aside tangent reuses command semantics by switching modes and dropping inherited main-session context", async () => {
     const mainRegularUser = {
       type: "message",
       role: "user",
@@ -2696,7 +2737,7 @@ describe("btw runtime behavior", () => {
     await harness.command("btw", "contextual start");
 
     const overlay = harness.latestOverlayComponent();
-    overlay.input.onSubmit?.("/btw:tangent tangent start");
+    overlay.input.onSubmit?.("/aside tangent tangent start");
     await flushAsyncWork();
 
     const resets = getCustomEntries(harness.entries, "btw-thread-reset");
@@ -2719,7 +2760,7 @@ describe("btw runtime behavior", () => {
     expect(overlay['modeText'].text).toContain("BTW tangent");
   });
 
-  it("in-modal /btw:inject reuses command semantics by handing off to the main session and dismissing the overlay", async () => {
+  it("in-modal /aside inject reuses command semantics by handing off to the main session and dismissing the overlay", async () => {
     const harness = createHarness();
     promptStreamMock.mockImplementation(() => streamAnswer("First answer"));
 
@@ -2728,7 +2769,7 @@ describe("btw runtime behavior", () => {
 
     const overlay = harness.latestOverlayComponent();
     const overlayHandle = harness.overlayHandles.at(-1);
-    overlay.input.onSubmit?.("/btw:inject Use this in the main run.");
+    overlay.input.onSubmit?.("/aside inject Use this in the main run.");
     await flushAsyncWork();
 
     expect(harness.sentUserMessages).toHaveLength(1);

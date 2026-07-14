@@ -1,7 +1,7 @@
 {
   "name": "pi-btw-sidecar",
   "version": "0.3.0",
-  "description": "Pi extension for persistent /btw side conversations with an isolated sidecar agent session.",
+  "description": "Pi extension for persistent /aside side conversations with an isolated sidecar agent session.",
   "type": "module",
   "main": "./index.ts",
   "exports": {
@@ -41,12 +41,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MasuRii/pi-btw-sidecar.git"
+    "url": "git+https://github.com/zhuconv/pi-btw-sidecar.git"
   },
   "bugs": {
-    "url": "https://github.com/MasuRii/pi-btw-sidecar/issues"
+    "url": "https://github.com/zhuconv/pi-btw-sidecar/issues"
   },
-  "homepage": "https://github.com/MasuRii/pi-btw-sidecar#readme",
+  "homepage": "https://github.com/zhuconv/pi-btw-sidecar#readme",
   "engines": {
     "node": ">=20"
   },

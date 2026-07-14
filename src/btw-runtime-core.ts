@@ -10,6 +10,12 @@ import type {
 import { type Api, type AssistantMessage, type Message, type Model, type ThinkingLevel as AiThinkingLevel, type UserMessage } from "@earendil-works/pi-ai";
 import type { OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import type { BtwAgentDefinition } from "./agent-discovery";
+import {
+  ASIDE_COMMAND_DESCRIPTION,
+  ASIDE_COMMAND_NAME,
+  parseAsideCommandArgs,
+  parseAsideSlashCommand,
+} from "./aside-command";
 import type { BtwConfig, BtwModalSize } from "./config";
 import { resolveBtwIcons, resolveBtwAgentIcon, type BtwIconSet } from "./icons";
 import { isRecord } from "./record-utils";
@@ -119,7 +125,7 @@ type SessionThinkingLevel = "off" | AiThinkingLevel;
 type BtwThreadMode = "contextual" | "tangent";
 type SessionModel = Model<Api>;
 /**
- * Loose model reference parsed from `/btw:model <provider> <id> <api>` and persisted to
+ * Loose model reference parsed from `/aside model <provider> <id> <api>` and persisted to
  * session entries. Resolved to a full SessionModel via ctx.modelRegistry.find(...).
  */
 type BtwModelRef = Pick<SessionModel, "provider" | "id" | "api">;
@@ -315,7 +321,7 @@ function parseBtwModelArgs(args: string):
 
   const parts = parsed.trimmed.split(/\s+/);
   if (parts.length !== 3) {
-    return { action: "invalid", message: "Usage: /btw:model <provider> <model> <api> | clear" };
+    return { action: "invalid", message: "Usage: /aside model <provider> <model> <api> | clear" };
   }
 
   const [provider, id, api] = parts;
@@ -2398,16 +2404,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
   }
 
   function parseOverlayBtwCommand(value: string): { name: string; args: string } | null {
-    const trimmed = value.trim();
-    const match = trimmed.match(/^\/(btw:(?:new|tangent|clear|inject(?:-select)?|summarize|agent|model|thinking))(?:\s+(.*))?$/);
-    if (!match) {
-      return null;
-    }
-
-    return {
-      name: match[1],
-      args: match[2]?.trim() ?? "",
-    };
+    return parseAsideSlashCommand(value);
   }
 
   async function submitFromOverlay(ctx: ExtensionCommandContext | ExtensionContext, value: string): Promise<void> {
@@ -2788,73 +2785,11 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
     });
   }
 
-  pi.registerCommand("btw", {
-    description: "Continue a side conversation in a focused BTW modal. Add --save to also persist a visible note.",
+  pi.registerCommand(ASIDE_COMMAND_NAME, {
+    description: ASIDE_COMMAND_DESCRIPTION,
     handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:tangent", {
-    description: "Start or continue a contextless BTW tangent in the focused BTW modal.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:tangent", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:new", {
-    description: "Start a fresh BTW thread with main-session context. Optionally ask the first question immediately.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:new", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:clear", {
-    description: "Dismiss the BTW modal/widget and clear the current thread.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:clear", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:inject", {
-    description: "Inject the full BTW thread into the main agent as a user message.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:inject", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:inject-select", {
-    description: "Open an inline chooser to select specific BTW exchanges to inject into the main agent.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:inject-select", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:summarize", {
-    description: "Summarize the BTW thread, then inject the summary into the main agent.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:summarize", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:agent", {
-    description: "Open the BTW agent picker, list agents, or select an agent by name.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:agent", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:model", {
-    description: "Show, set, or clear the BTW-only model override.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:model", args, ctx);
-    },
-  });
-
-  pi.registerCommand("btw:thinking", {
-    description: "Show, set, or clear the BTW-only thinking override.",
-    handler: async (args, ctx) => {
-      await dispatchBtwCommand("btw:thinking", args, ctx);
+      const command = parseAsideCommandArgs(args);
+      await dispatchBtwCommand(command.name, command.args, ctx);
     },
   });
 }

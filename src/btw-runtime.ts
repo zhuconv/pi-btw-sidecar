@@ -1,54 +1,11 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { ASIDE_COMMAND_DESCRIPTION, ASIDE_COMMAND_NAME } from "./aside-command";
 import { formatBtwUsage } from "./btw-usage";
 import { isBtwConfigEnabledSync } from "./config";
 
 const BTW_MESSAGE_TYPE = "btw-note";
 const BTW_FOCUS_SHORTCUTS = ["alt+/", "ctrl+alt+w"] as const;
-const BTW_COMMANDS = [
-  {
-    name: "btw",
-    description: "Continue a side conversation in a focused BTW modal. Add --save to also persist a visible note.",
-  },
-  {
-    name: "btw:tangent",
-    description: "Start or continue a contextless BTW tangent in the focused BTW modal.",
-  },
-  {
-    name: "btw:new",
-    description: "Start a fresh BTW thread with main-session context. Optionally ask the first question immediately.",
-  },
-  {
-    name: "btw:clear",
-    description: "Dismiss the BTW modal/widget and clear the current thread.",
-  },
-  {
-    name: "btw:inject",
-    description: "Inject the full BTW thread into the main agent as a user message.",
-  },
-  {
-    name: "btw:inject-select",
-    description: "Open an inline chooser to select specific BTW exchanges to inject into the main agent.",
-  },
-  {
-    name: "btw:summarize",
-    description: "Summarize the BTW thread, then inject the summary into the main agent.",
-  },
-  {
-    name: "btw:agent",
-    description: "Open the BTW agent picker, list agents, or select an agent by name.",
-  },
-  {
-    name: "btw:model",
-    description: "Show, set, or clear the BTW-only model override.",
-  },
-  {
-    name: "btw:thinking",
-    description: "Show, set, or clear the BTW-only thinking override.",
-  },
-] as const;
-
-type RuntimeCommandName = (typeof BTW_COMMANDS)[number]["name"];
 type CapturedCommand = { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void };
 type CapturedShortcut = { handler: (ctx: ExtensionContext) => Promise<void> | void };
 type CapturedHandler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown;
@@ -148,11 +105,11 @@ export default function btwRuntime(pi: ExtensionAPI) {
     return runtimePromise;
   };
 
-  const dispatchCommand = async (name: RuntimeCommandName, args: string, ctx: ExtensionCommandContext) => {
+  const dispatchCommand = async (args: string, ctx: ExtensionCommandContext) => {
     const runtime = await getRuntime();
-    const command = runtime.commands.get(name);
+    const command = runtime.commands.get(ASIDE_COMMAND_NAME);
     if (!command) {
-      throw new Error(`BTW runtime did not register command: ${name}`);
+      throw new Error(`BTW runtime did not register command: ${ASIDE_COMMAND_NAME}`);
     }
 
     await command.handler(args, ctx);
@@ -219,12 +176,10 @@ export default function btwRuntime(pi: ExtensionAPI) {
     });
   }
 
-  for (const command of BTW_COMMANDS) {
-    pi.registerCommand(command.name, {
-      description: command.description,
-      handler: async (args, ctx) => {
-        await dispatchCommand(command.name, args, ctx);
-      },
-    });
-  }
+  pi.registerCommand(ASIDE_COMMAND_NAME, {
+    description: ASIDE_COMMAND_DESCRIPTION,
+    handler: async (args, ctx) => {
+      await dispatchCommand(args, ctx);
+    },
+  });
 }

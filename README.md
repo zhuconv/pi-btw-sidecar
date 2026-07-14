@@ -2,26 +2,24 @@
 
 # pi-btw-sidecar
 
-[![npm version](https://img.shields.io/npm/v/pi-btw-sidecar?style=for-the-badge)](https://www.npmjs.com/package/pi-btw-sidecar)
-[![License](https://img.shields.io/github/license/MasuRii/pi-btw-sidecar?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/github/license/zhuconv/pi-btw-sidecar?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y01PSSVR)
 
-Persistent `/btw` side conversations for the [Pi coding agent](https://github.com/mariozechner/pi).
+Persistent `/aside` side conversations for the [Pi coding agent](https://github.com/mariozechner/pi).
 `pi-btw-sidecar` opens a focused, non-capturing modal sidecar session, keeps BTW discussion separate from the main transcript, and can inject or summarize the side conversation back into the main session on request.
-- **npm**: https://www.npmjs.com/package/pi-btw-sidecar
-- **GitHub**: https://github.com/MasuRii/pi-btw-sidecar
+- **GitHub**: https://github.com/zhuconv/pi-btw-sidecar
 
 </div>
 
 ## Features
 
-- `/btw` contextual side thread with current main-session context.
-- `/btw:tangent` contextless tangent thread.
+- `/aside` contextual side thread with current main-session context.
+- `/aside tangent` contextless tangent thread.
 - Modal BTW composer with streaming markdown transcript, scrolling, and Escape dismissal.
-- Agent selection from `agent/agents/*.md` via `/btw:agent`; the selected agent markdown body becomes the sidecar instruction prompt. Agent frontmatter `color` field is used for per-agent accent styling.
-- BTW-only model and thinking overrides with `/btw:model` and `/btw:thinking`.
+- Agent selection from `agent/agents/*.md` via `/aside agent`; the selected agent markdown body becomes the sidecar instruction prompt. Agent frontmatter `color` field is used for per-agent accent styling.
+- BTW-only model and thinking overrides with `/aside model` and `/aside thinking`.
 - Transcript item selection for inject: when injecting the BTW thread, an interactive selection mode lets the user pick specific transcript items before injection.
 - Isolated no-tool sub-sessions: BTW agents receive selected instructions and seeded conversation context without tools, skills, prompts, agents files, themes, extension resource collections, or inherited main-session system prompts.
 - Configurable icon mode (`nerd`, `unicode`, `emoji`, or `auto`/`fallback`) with distinct icons for agents, session, model, and thinking status labels.
@@ -29,16 +27,10 @@ Persistent `/btw` side conversations for the [Pi coding agent](https://github.co
 
 ## Installation
 
-### npm package
-
-```bash
-pi install npm:pi-btw-sidecar
-```
-
 ### Git repository
 
 ```bash
-pi install git:github.com/MasuRii/pi-btw-sidecar
+pi install git:github.com/zhuconv/pi-btw-sidecar
 ```
 
 ### Local extension folder
@@ -57,17 +49,20 @@ Pi discovers the extension through the root `index.ts` entry listed in `package.
 
 ## Commands
 
+This fork registers only the `/aside` root command. Subcommands use spaces instead of colon namespaces so OMP's built-in `/btw` command cannot intercept them.
+
 | Command | Description |
 | --- | --- |
-| `/btw [prompt]` | Open or continue the contextual BTW thread. Add `--save` to persist a visible note. |
-| `/btw:tangent [prompt]` | Open or continue a contextless tangent thread. |
-| `/btw:agent [name\|list]` | Pick, list, or set the BTW instruction agent. |
-| `/btw:new [prompt]` | Reset BTW and start a fresh contextual thread. |
-| `/btw:clear` | Clear BTW state and dismiss the modal. |
-| `/btw:inject [instructions]` | Inject the full BTW thread into the main session. |
-| `/btw:summarize [instructions]` | Summarize the BTW thread and inject the summary. |
-| `/btw:model [provider model api\|clear]` | Show, set, or clear the BTW-only model override. |
-| `/btw:thinking [level\|clear]` | Show, set, or clear the BTW-only thinking override. |
+| `/aside [prompt]` | Open or continue the contextual BTW thread. Add `--save` to persist a visible note. |
+| `/aside tangent [prompt]` | Open or continue a contextless tangent thread. |
+| `/aside agent [name\|list]` | Pick, list, or set the BTW instruction agent. |
+| `/aside new [prompt]` | Reset BTW and start a fresh contextual thread. |
+| `/aside clear` | Clear BTW state and dismiss the modal. |
+| `/aside inject [instructions]` | Inject the full BTW thread into the main session. |
+| `/aside inject-select [instructions]` | Select specific BTW exchanges to inject into the main session. |
+| `/aside summarize [instructions]` | Summarize the BTW thread and inject the summary. |
+| `/aside model [provider model api\|clear]` | Show, set, or clear the BTW-only model override. |
+| `/aside thinking [level\|clear]` | Show, set, or clear the BTW-only thinking override. |
 
 ## Configuration
 
@@ -119,9 +114,10 @@ The extension does not write debug output to `console`, `stdout`, or `stderr`, a
 pi-btw-sidecar/
 ├── index.ts                         # Stable Pi extension entrypoint for auto-discovery
 ├── src/
+│   ├── aside-command.ts             # `/aside` subcommand parsing and runtime routing
 │   ├── btw-runtime.ts               # Command registration and sidecar session orchestration
 │   ├── agent-discovery.ts           # Agent markdown discovery and selection state
-│   ├── agent-selection-ui.ts        # `/btw:agent` picker UI helpers
+│   ├── agent-selection-ui.ts        # `/aside agent` picker UI helpers
 │   ├── config.ts                    # Config loading, validation, and defaults
 │   ├── debug-logger.ts              # File-only debug logger gated by config.json
 │   └── icons.ts                     # Modal icon sets (nerd, unicode, emoji, fallback modes)
@@ -154,7 +150,7 @@ The package metadata follows the publish-ready shape used by established Pi exte
 - entrypoint: `index.ts`
 - package exports: `.` → `./index.ts`
 - Pi extension manifest: `pi.extensions`
-- repository, bugs, and homepage links target `MasuRii/pi-btw-sidecar`
+- repository, bugs, and homepage links target `zhuconv/pi-btw-sidecar`
 - published files: source, README, changelog, license, and config template
 - runtime `config.json`, `debug/` logs, tests, and build artifacts excluded from npm publication
 
