@@ -19,6 +19,7 @@ import {
 import type { BtwConfig, BtwModalSize } from "./config";
 import { resolveBtwIcons, resolveBtwAgentIcon, type BtwIconSet } from "./icons";
 import { isRecord } from "./record-utils";
+import { adaptModelRegistryForAgentSession, resolveModelRequestAuth } from "./model-registry-compat";
 import { getNumericUsageField } from "./btw-usage";
 import type { BtwTranscript, BtwTranscriptEntry } from "./btw-types";
 
@@ -372,7 +373,22 @@ function isSessionModel(value: unknown): value is SessionModel {
 }
 
 function getMainModel(ctx: ExtensionCommandContext | ExtensionContext | null | undefined): Model<Api> | undefined {
-  return ctx?.model as Model<Api> | undefined;
+  const direct = ctx?.model as Model<Api> | undefined;
+  if (direct) {
+    return direct;
+  }
+
+  const models = (ctx as unknown as { models?: { current?: () => unknown } } | null | undefined)?.models;
+  if (typeof models?.current !== "function") {
+    return undefined;
+  }
+
+  try {
+    const current = models.current();
+    return isSessionModel(current) ? current : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function getRegistryModels(ctx: ExtensionCommandContext, method: "getAvailable" | "getAll"): SessionModel[] {
@@ -394,6 +410,18 @@ function resolveModelReference(ctx: ExtensionCommandContext, requested: string |
   const trimmed = requested?.trim();
   if (!trimmed) {
     return { model: null };
+  }
+
+  const modelQuery = (ctx as unknown as { models?: { resolve?: (spec: string) => unknown } }).models;
+  if (typeof modelQuery?.resolve === "function") {
+    try {
+      const resolved = modelQuery.resolve(trimmed);
+      if (isSessionModel(resolved)) {
+        return { model: resolved, requested: trimmed };
+      }
+    } catch {
+      // Fall through to the older registry API.
+    }
   }
 
   const parsed = parseModelReference(trimmed);
@@ -1700,7 +1728,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
   ): Promise<ResolvedBtwModel> {
     const mainModel = getMainModel(ctx);
     if (btwModelOverride) {
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(btwModelOverride);
+      const auth = await resolveModelRequestAuth(ctx.modelRegistry, btwModelOverride);
       if (auth.ok && auth.apiKey) {
         return {
           model: btwModelOverride,
@@ -1751,7 +1779,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
       };
       const resolvedAgentModel = resolveModelReference(ctx, agentModelReference);
       if (resolvedAgentModel.model) {
-        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(resolvedAgentModel.model);
+        const auth = await resolveModelRequestAuth(ctx.modelRegistry, resolvedAgentModel.model);
         if (auth.ok && auth.apiKey) {
           return {
             model: resolvedAgentModel.model,
@@ -1987,7 +2015,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
     const { session } = await createAgentSession({
       sessionManager: SessionManager.inMemory(),
       model: settings.model,
-      modelRegistry: ctx.modelRegistry as AgentSession["modelRegistry"],
+      modelRegistry: adaptModelRegistryForAgentSession(ctx.modelRegistry) as AgentSession["modelRegistry"],
       thinkingLevel: settings.thinkingLevel,
       // BTW side sessions intentionally run without tools or resource collections.
       noTools: "all",
@@ -2561,7 +2589,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
       return;
     }
 
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    const auth = await resolveModelRequestAuth(ctx.modelRegistry, model);
     if (!auth.ok || !auth.apiKey) {
       const message = auth.ok ? `No credentials available for ${model.provider}/${model.id}.` : auth.error;
       setOverlayStatus(message, ctx);
@@ -2696,7 +2724,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
       throw new Error(settings.fallbackReason || "No active model selected.");
     }
 
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    const auth = await resolveModelRequestAuth(ctx.modelRegistry, model);
     if (!auth.ok || !auth.apiKey) {
       throw new Error(auth.ok ? `No credentials available for ${model.provider}/${model.id}.` : auth.error);
     }
@@ -2705,7 +2733,7 @@ export default function btwRuntimeCore(pi: ExtensionAPI) {
     const { session } = await createAgentSession({
       sessionManager: SessionManager.inMemory(),
       model,
-      modelRegistry: ctx.modelRegistry as AgentSession["modelRegistry"],
+      modelRegistry: adaptModelRegistryForAgentSession(ctx.modelRegistry) as AgentSession["modelRegistry"],
       thinkingLevel: "off",
       noTools: "all",
       tools: [],

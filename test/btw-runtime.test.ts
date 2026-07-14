@@ -9,6 +9,7 @@ import btwExtension from "../src/btw-runtime";
 import { buildOverlayTranscript, resolveBtwModalDimensions } from "../src/btw-runtime-core";
 import { parseAsideCommandArgs, parseAsideSlashCommand } from "../src/aside-command";
 import { resolveBtwIconsForContext } from "../src/icons";
+import { adaptModelRegistryForAgentSession, resolveModelRequestAuth } from "../src/model-registry-compat";
 import {
   discoverBtwAgents,
   findBtwAgentByName,
@@ -880,6 +881,74 @@ describe("aside command parsing", () => {
   });
 });
 
+describe("model registry compatibility", () => {
+  it("passes an upstream Pi registry through unchanged", async () => {
+    const registry = {
+      getApiKeyAndHeaders: vi.fn(async () => ({ ok: true as const, apiKey: "pi-key" })),
+    };
+
+    expect(adaptModelRegistryForAgentSession(registry)).toBe(registry);
+    expect(await resolveModelRequestAuth(registry, { provider: "pi", id: "model" })).toEqual({
+      ok: true,
+      apiKey: "pi-key",
+      headers: undefined,
+      env: undefined,
+    });
+  });
+
+  it("adapts OMP getApiKey registries and preserves method binding", async () => {
+    const registry = {
+      prefix: "omp",
+      async getApiKey(this: { prefix: string }, model: { id: string }) {
+        return `${this.prefix}-${model.id}`;
+      },
+      find(this: { prefix: string }, provider: string, id: string) {
+        return `${this.prefix}:${provider}/${id}`;
+      },
+    };
+    const model = { provider: "omp", id: "model", headers: { "x-omp": "enabled" } };
+
+    expect(await resolveModelRequestAuth(registry, model)).toEqual({
+      ok: true,
+      apiKey: "omp-model",
+      headers: { "x-omp": "enabled" },
+    });
+
+    const adapted = adaptModelRegistryForAgentSession(registry) as typeof registry & {
+      getApiKeyAndHeaders: (model: typeof model) => Promise<unknown>;
+      isUsingOAuth: () => boolean;
+    };
+    expect(adapted).not.toBe(registry);
+    expect(await adapted.getApiKeyAndHeaders(model)).toEqual({
+      ok: true,
+      apiKey: "omp-model",
+      headers: { "x-omp": "enabled" },
+    });
+    expect(adapted.find("omp", "model")).toBe("omp:omp/model");
+    expect(adapted.isUsingOAuth()).toBe(false);
+    expect(adaptModelRegistryForAgentSession(registry)).toBe(adapted);
+  });
+
+  it("supports OMP resolver-only registries for forward compatibility", async () => {
+    const resolver = vi.fn(async ({ lastChance, error }: { lastChance: boolean; error: unknown }) => {
+      expect(lastChance).toBe(false);
+      expect(error).toBeUndefined();
+      return "rotating-key";
+    });
+    const registry = {
+      resolver: vi.fn(() => resolver),
+    };
+
+    expect(await resolveModelRequestAuth(registry, { provider: "omp", id: "future-model" })).toEqual({
+      ok: true,
+      apiKey: "rotating-key",
+      headers: undefined,
+    });
+    expect(registry.resolver).toHaveBeenCalledWith({ provider: "omp", id: "future-model" });
+    expect(resolver).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("btw agent discovery and selection UI", () => {
   it("parses agent frontmatter and keeps the full markdown body as instructions", () => {
     const parsed = parseBtwAgentMarkdown(
@@ -937,6 +1006,25 @@ describe("btw runtime behavior", () => {
     await harness.command("aside", "clear");
 
     expect(harness.notifications.at(-1)).toEqual({ message: "Cleared BTW thread.", type: "info" });
+  });
+
+  it("runs through an OMP-style model registry without getApiKeyAndHeaders", async () => {
+    const harness = createHarness();
+    const registry = harness.baseCtx.modelRegistry as unknown as Record<string, unknown>;
+    delete registry.getApiKeyAndHeaders;
+    registry.getApiKey = vi.fn(async () => "omp-test-key");
+    registry.isUsingOAuth = vi.fn(() => false);
+
+    await harness.runSessionStart();
+    await harness.command("aside", "compatibility question");
+
+    expect(getCustomEntries(harness.entries, "btw-thread-entry")).toHaveLength(1);
+    const sessionRegistry = createAgentSessionMock.mock.calls[0]?.[0]?.modelRegistry;
+    expect(sessionRegistry).not.toBe(registry);
+    expect(await sessionRegistry.getApiKeyAndHeaders(harness.baseCtx.model)).toMatchObject({
+      ok: true,
+      apiKey: "omp-test-key",
+    });
   });
 
   it("renders expanded BTW notes when usage lacks totalTokens", () => {

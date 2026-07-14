@@ -27,7 +27,19 @@ Persistent `/aside` side conversations for the [Pi coding agent](https://github.
 
 ## Installation
 
-### Git repository
+### OMP
+
+If the upstream npm package is already installed, replace it with this fork:
+
+```bash
+omp plugin uninstall pi-btw-sidecar
+omp install github:zhuconv/pi-btw-sidecar
+omp agents unpack
+```
+
+Restart OMP or run `/reload` after installation.
+
+### Pi Git repository
 
 ```bash
 pi install git:github.com/zhuconv/pi-btw-sidecar
