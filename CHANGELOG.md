@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Avoid OMP compiled-binary failures on lazily imported Pi SDK modules (`omp-legacy-pi-bundled:`) and use the host's compatible resource-loader runtime for isolated side sessions.
 - Explicitly clear side-session tools on hosts such as OMP that ignore Pi's legacy `noTools` option.
+- Construct the overlay editor through a runtime-compatible adapter for both Pi's `(tui, theme)` and OMP's newer `(theme)` constructor APIs.
 
 ## [0.3.0] - 2026-07-03
 

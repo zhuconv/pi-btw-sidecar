@@ -27,6 +27,72 @@ type BtwEditorShim = Editor & {
   onEscape?: () => void;
 };
 
+type BtwEditorConstructor = {
+  readonly length: number;
+  new (theme: unknown): Editor;
+  new (tui: TUI, theme: EditorTheme): Editor;
+};
+
+const BTW_BOX_ROUND = {
+  topLeft: "╭",
+  topRight: "╮",
+  bottomLeft: "╰",
+  bottomRight: "╯",
+  horizontal: "─",
+  vertical: "│",
+} as const;
+
+const BTW_BOX_SHARP = {
+  topLeft: "┌",
+  topRight: "┐",
+  bottomLeft: "└",
+  bottomRight: "┘",
+  horizontal: "─",
+  vertical: "│",
+  teeDown: "┬",
+  teeUp: "┴",
+  teeLeft: "┤",
+  teeRight: "├",
+  cross: "┼",
+} as const;
+
+function createBtwEditor(tui: TUI, theme: BtwTheme): Editor {
+  const symbols = {
+    cursor: ">",
+    inputCursor: "▏",
+    boxRound: BTW_BOX_ROUND,
+    boxSharp: BTW_BOX_SHARP,
+    table: BTW_BOX_SHARP,
+    quoteBorder: "│",
+    hrChar: "─",
+    colorSwatch: "[]",
+    spinnerFrames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  };
+  const editorTheme = {
+    borderColor: (str: string) => theme.fg("border", str),
+    selectList: {
+      selectedPrefix: (text: string) => theme.fg("accent", text),
+      selectedText: (text: string) => theme.bold(text),
+      description: (text: string) => theme.fg("dim", text),
+      scrollInfo: (text: string) => theme.fg("dim", text),
+      noMatch: (text: string) => theme.fg("dim", text),
+      symbols,
+    },
+    symbols,
+    editorPaddingX: 0,
+  } as EditorTheme;
+
+  const EditorConstructor = Editor as unknown as BtwEditorConstructor;
+  // Pi <=0.80 accepts (tui, theme); current OMP exposes the newer (theme)
+  // constructor. Function.length distinguishes the two without host/version checks.
+  const editor =
+    EditorConstructor.length <= 1
+      ? new EditorConstructor(editorTheme)
+      : new EditorConstructor(tui, editorTheme);
+  editor.setPaddingX(0);
+  return editor;
+}
+
 type BtwOverlayDimensions = {
   maxHeight: number;
 };
@@ -135,18 +201,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
     this.transcript = new Container();
     this.statusText = new Text("", 1, 0);
 
-    const editorTheme: EditorTheme = {
-      borderColor: (str: string) => this.theme.fg("border", str),
-      selectList: {
-        selectedPrefix: (text: string) => this.theme.fg("accent", text),
-        selectedText: (text: string) => this.theme.bold(text),
-        description: (text: string) => this.theme.fg("dim", text),
-        scrollInfo: (text: string) => this.theme.fg("dim", text),
-        noMatch: (text: string) => this.theme.fg("dim", text),
-      },
-    };
-
-    this.input = new Editor(this.tui, editorTheme, { paddingX: 0 });
+    this.input = createBtwEditor(this.tui, this.theme);
     this.input.onSubmit = (value) => {
       this.followTranscript = true;
       this.onSubmitCallback(value);
